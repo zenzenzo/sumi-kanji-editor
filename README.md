@@ -1,8 +1,19 @@
 # 墨 Sumi
 
-A kanji calligraphy editor. Type a character, watch a simulated fude write it stroke by stroke, then open the path and change how the brush actually moves.
+A kanji calligraphy editor for making **fully customizable animated GIFs** of a brush writing a character — and for studying how those strokes are actually meant to be written.
 
-Use it, fork it, strip it for parts. The whole project is yours to repurpose.
+Type a kanji, tune the fude, pin 折れ / 磔 / 止め / 払い on the path, then export a looping GIF of the piece. Use it, fork it, strip it for parts. The whole project is yours to repurpose.
+
+## Why it exists
+
+The main use-case is producing a GIF that looks like *your* calligraphy, not a stock stroke-order animation:
+
+1. Pick the character (or a short compound)
+2. Choose a brush — Kaisho, Wet, Dry, Goat — and the sliders
+3. Edit the median and drop pins so the motion matches 永字八法
+4. Hit **GIF** in the writing panel
+
+The file downloads as `sumi-永.gif` (or whatever you wrote). Grid, ghost outline, speed, and your path edits are all in the recording.
 
 ## What it does
 
@@ -53,7 +64,7 @@ If you ship a fork, a nod in your own readme is kind but not required. Please ke
 ## Layout
 
 ```
-src/lib/brush/     bristle sim, wet-paper commit, path pins, stroke prep
+src/lib/brush/     bristle sim, wet-paper commit, path pins, stroke prep, GIF export
 src/lib/kanji/     glyph loading, presets
 src/components/    studio, paper, path editor + toolbar
 src/routes/        pages and auth

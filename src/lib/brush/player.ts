@@ -41,6 +41,8 @@ export type PlayerOptions = {
   speed: number;
   reducedMotion: boolean;
   onUpdate?: (s: PlayerSnapshot) => void;
+  /** Pin the drawing surface (used for GIF export). */
+  fixedSize?: { w: number; h: number; dpr?: number };
 };
 
 type Step =
@@ -72,6 +74,7 @@ export class BrushPlayer {
   private width = 0;
   private height = 0;
   private dpr = 1;
+  private fixedSize: { w: number; h: number; dpr?: number } | null = null;
 
   private wet = new WetPaper();
   private sim: BristleSim;
@@ -89,6 +92,7 @@ export class BrushPlayer {
     this.edits = opts.edits ?? {};
     this.speed = opts.speed;
     this.onUpdate = opts.onUpdate;
+    this.fixedSize = opts.fixedSize ?? null;
     this.sim = new BristleSim(this.settings, this.colors.ink);
     this.resize();
     this.rebuild();
@@ -138,9 +142,11 @@ export class BrushPlayer {
 
   resize(): boolean {
     const parent = this.canvas.parentElement;
-    const cssW = Math.max(1, parent?.clientWidth ?? 640);
-    const cssH = Math.max(1, parent?.clientHeight ?? 640);
-    const dpr = Math.min(window.devicePixelRatio || 1, 2);
+    const cssW = this.fixedSize?.w ?? Math.max(1, parent?.clientWidth ?? 640);
+    const cssH = this.fixedSize?.h ?? Math.max(1, parent?.clientHeight ?? 640);
+    const dpr = this.fixedSize
+      ? (this.fixedSize.dpr ?? 1)
+      : Math.min(window.devicePixelRatio || 1, 2);
     const nextW = Math.max(1, Math.round(cssW * dpr));
     const nextH = Math.max(1, Math.round(cssH * dpr));
     if (
@@ -292,6 +298,61 @@ export class BrushPlayer {
   destroy() {
     this.playing = false;
     cancelAnimationFrame(this.raf);
+  }
+
+  /** Rewind without starting playback. */
+  rewind() {
+    this.playing = false;
+    cancelAnimationFrame(this.raf);
+    this.stepIndex = 0;
+    this.stepT = 0;
+    this.done = false;
+    this.sealAlpha = 0;
+    this.simStepIndex = 0;
+    this.lastSample = -1;
+    this.sim.reset();
+    this.clearInk();
+    this.draw();
+    this.emit();
+  }
+
+  /**
+   * Advance the clock by `ms` of animation time (speed is the caller's job).
+   * Returns false when the piece is finished.
+   */
+  tickMs(ms: number): boolean {
+    const step = this.steps[this.stepIndex];
+    if (!step) {
+      this.playing = false;
+      this.done = true;
+      this.sealAlpha = 1;
+      this.draw();
+      return false;
+    }
+    this.stepT += ms / Math.max(16, step.duration);
+    if (step.type === "seal") this.sealAlpha = Math.min(1, this.stepT);
+    if (this.stepT >= 1) {
+      this.stepT = 0;
+      this.stepIndex += 1;
+      if (this.stepIndex >= this.steps.length) {
+        this.playing = false;
+        this.done = true;
+        this.sealAlpha = 1;
+      }
+    }
+    this.catchUp();
+    this.draw();
+    return !this.done;
+  }
+
+  readPixels(): ImageData {
+    const ctx = this.canvas.getContext("2d");
+    if (!ctx) return new ImageData(1, 1);
+    return ctx.getImageData(0, 0, this.canvas.width, this.canvas.height);
+  }
+
+  pixelSize(): { w: number; h: number } {
+    return { w: this.canvas.width, h: this.canvas.height };
   }
 
   private tick = (ts: number) => {

@@ -3,6 +3,7 @@ import {
   Bookmark,
   BookmarkCheck,
   ChevronRight,
+  ImageDown,
   LoaderCircle,
   Pause,
   Play,
@@ -28,6 +29,7 @@ import {
   type PathTool,
 } from "@/lib/brush/edits";
 import type { PlayerSnapshot } from "@/lib/brush/player";
+import { downloadBlob, renderCalligraphyGif } from "@/lib/brush/gif-export";
 import { BRUSH_PRESETS, type BrushPresetId } from "@/lib/brush/settings";
 import { extractKanji } from "@/lib/kanji/cjk";
 import { loadGlyphs } from "@/lib/kanji/load-glyphs";
@@ -53,6 +55,7 @@ export function Studio() {
   const [command, setCommand] = useState<PaperCommand>(null);
   const [snap, setSnap] = useState<PlayerSnapshot | null>(null);
   const [scroll, setScroll] = useState<string[]>([]);
+  const [exporting, setExporting] = useState(false);
   const composing = useRef(false);
   const cmdTimer = useRef<number | null>(null);
 
@@ -164,6 +167,43 @@ export function Studio() {
       }
     } catch {
       toast("Could not update your scroll. Try signing in again.");
+    }
+  }
+
+  async function exportGif() {
+    if (!glyphs.length || exporting) return;
+    setExporting(true);
+    toast("Rendering GIF…");
+    try {
+      const paper = await new Promise<HTMLImageElement | null>((resolve) => {
+        const img = new Image();
+        img.onload = () => resolve(img);
+        img.onerror = () => resolve(null);
+        img.src = "/washi.jpg";
+      });
+      const blob = await renderCalligraphyGif({
+        glyphs,
+        settings,
+        edits: book,
+        showGrid,
+        showGhost,
+        speed,
+        paper,
+        colors: {
+          paper: "#efe6d4",
+          ink: "#1c1814",
+          grid: "#1c1814",
+          ghost: "#1c1814",
+          seal: "#a33b2b",
+        },
+      });
+      const name = `sumi-${written || "kanji"}.gif`;
+      downloadBlob(blob, name);
+      toast(`Saved ${name}`);
+    } catch (err) {
+      toast(err instanceof Error ? err.message : "Could not encode the GIF.");
+    } finally {
+      setExporting(false);
     }
   }
 
@@ -291,6 +331,16 @@ export function Studio() {
               onClick={() => fire("step")}
             >
               <ChevronRight />
+            </Button>
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              disabled={exporting || glyphs.length === 0}
+              onClick={() => void exportGif()}
+            >
+              {exporting ? <LoaderCircle className="animate-spin" /> : <ImageDown />}
+              GIF
             </Button>
             <Button type="button" size="sm" variant="outline" className="ml-auto" onClick={togglePin}>
               {pinned ? <BookmarkCheck /> : <Bookmark />}
