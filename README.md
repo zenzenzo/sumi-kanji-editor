@@ -4,6 +4,8 @@ A kanji calligraphy editor for making **fully customizable animated GIFs** of a 
 
 Type a kanji, tune the fude, pin 折れ / 磔 / 止め / 払い on the path, then export a looping GIF of the piece. Use it, fork it, strip it for parts. The whole project is yours to repurpose.
 
+A live version is at [sumi.grok.me](https://sumi.grok.me).
+
 ## Why it exists
 
 The main use-case is producing a GIF that looks like *your* calligraphy, not a stock stroke-order animation:
