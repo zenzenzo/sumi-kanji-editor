@@ -7,14 +7,23 @@ import {
   unprojectFromCell,
   type Cell,
 } from "@/lib/brush/engine";
+import { classifyStroke } from "@/lib/brush/geometry";
 import {
+  DEFAULT_PRESSURE_MULT,
+  inferMode,
+  modeAlongStroke,
+  MODE_COLOR,
   newPinId,
+  PIN_COLOR,
   PIN_META,
+  PRESSURE_MULT_MAX,
+  PRESSURE_MULT_MIN,
   type EditBook,
   type GlyphEdit,
   type PathPin,
   type PathTool,
   type PinKind,
+  type StrokeMode,
 } from "@/lib/brush/edits";
 import type { GlyphData } from "@/lib/kanji/types";
 
@@ -29,6 +38,8 @@ type Drag =
   | { type: "point"; char: string; si: number; pi: number }
   | { type: "pin"; char: string; si: number; id: string; x: number; y: number; moved: boolean };
 
+type DrawState = { char: string; si: number; lastTime: number; lastX: number; lastY: number };
+
 type SliderState = {
   char: string;
   si: number;
@@ -39,6 +50,70 @@ type SliderState = {
 
 function clampPt(p: [number, number]): [number, number] {
   return [Math.max(-80, Math.min(1104, p[0])), Math.max(-80, Math.min(1104, p[1]))];
+}
+
+function pointAtT(
+  views: { x: number; y: number }[],
+  t: number,
+): { x: number; y: number } {
+  if (!views.length) return { x: 0, y: 0 };
+  if (views.length === 1) return views[0];
+  const segs: number[] = [0];
+  for (let i = 1; i < views.length; i++) {
+    segs.push(segs[i - 1] + Math.hypot(views[i].x - views[i - 1].x, views[i].y - views[i - 1].y));
+  }
+  const total = segs[segs.length - 1] || 1;
+  const target = Math.max(0, Math.min(1, t)) * total;
+  for (let i = 1; i < segs.length; i++) {
+    if (target <= segs[i]) {
+      const u = (target - segs[i - 1]) / Math.max(1e-4, segs[i] - segs[i - 1]);
+      return {
+        x: views[i - 1].x + (views[i].x - views[i - 1].x) * u,
+        y: views[i - 1].y + (views[i].y - views[i - 1].y) * u,
+      };
+    }
+  }
+  return views[views.length - 1];
+}
+
+function vertexTs(views: { x: number; y: number }[]): number[] {
+  const segs: number[] = [0];
+  for (let i = 1; i < views.length; i++) {
+    segs.push(segs[i - 1] + Math.hypot(views[i].x - views[i - 1].x, views[i].y - views[i - 1].y));
+  }
+  const total = segs[segs.length - 1] || 1;
+  return segs.map((s) => s / total);
+}
+
+function coloredSegments(
+  views: { x: number; y: number }[],
+  pins: PathPin[],
+  inferred: StrokeMode,
+): { d: string; color: string }[] {
+  const ts = vertexTs(views);
+  const cuts = [0, ...pins.filter((p) => p.kind !== "pressure" && p.kind !== "ore").map((p) => p.t), 1].sort(
+    (a, b) => a - b,
+  );
+  const unique: number[] = [];
+  for (const t of cuts) {
+    if (!unique.length || t - unique[unique.length - 1] > 1e-4) unique.push(t);
+  }
+  const out: { d: string; color: string }[] = [];
+  for (let i = 0; i < unique.length - 1; i++) {
+    const a = unique[i];
+    const b = unique[i + 1];
+    const pts = [pointAtT(views, a)];
+    for (let j = 1; j < views.length - 1; j++) {
+      if (ts[j] > a + 1e-4 && ts[j] < b - 1e-4) pts.push(views[j]);
+    }
+    pts.push(pointAtT(views, b));
+    const d = pts
+      .map((v, k) => `${k === 0 ? "M" : "L"} ${v.x.toFixed(1)} ${v.y.toFixed(1)}`)
+      .join(" ");
+    const mode = modeAlongStroke(a + 1e-4, pins, inferred);
+    out.push({ d, color: MODE_COLOR[mode] ?? MODE_COLOR.auto });
+  }
+  return out;
 }
 
 function nearestOnStroke(
@@ -77,6 +152,7 @@ function nearestOnStroke(
 function cloneEdit(edit: GlyphEdit): GlyphEdit {
   return {
     char: edit.char,
+    custom: edit.custom,
     strokes: edit.strokes.map((s) => ({
       points: s.points.map((p) => [p[0], p[1]]),
       pins: s.pins.map((p) => ({ ...p })),
@@ -92,8 +168,13 @@ export function PathEditor({ glyphs, book, tool, onCommit }: Props) {
   const [slider, setSlider] = useState<SliderState | null>(null);
   const drag = useRef<Drag | null>(null);
   const dirty = useRef(false);
+  const draftRef = useRef(draft);
+  draftRef.current = draft;
+  const drawing = useRef<DrawState | null>(null);
+  const [cursor, setCursor] = useState<{ x: number; y: number } | null>(null);
 
   useEffect(() => {
+    if (drag.current) return;
     setDraft(book);
   }, [book]);
 
@@ -132,12 +213,13 @@ export function PathEditor({ glyphs, book, tool, onCommit }: Props) {
   }
 
   function commitChar(char: string) {
-    setDraft((prev) => {
-      const edit = prev[char];
-      if (edit) onCommit(edit);
-      dirty.current = false;
-      return prev;
-    });
+    const edit = draftRef.current[char];
+    if (edit) onCommit(edit);
+    dirty.current = false;
+  }
+
+  function capture(e: React.PointerEvent) {
+    svgRef.current?.setPointerCapture(e.pointerId);
   }
 
   function updateStroke(char: string, si: number, fn: (s: GlyphEdit["strokes"][number]) => void) {
@@ -149,18 +231,123 @@ export function PathEditor({ glyphs, book, tool, onCommit }: Props) {
       if (!stroke) return prev;
       fn(stroke);
       dirty.current = true;
-      return { ...prev, [char]: next };
+      const book = { ...prev, [char]: next };
+      draftRef.current = book;
+      return book;
     });
   }
 
-  function onPointerMove(e: React.PointerEvent) {
-    const d = drag.current;
-    const p = svgPoint(e);
-    if (!d || !p) return;
+  function glyphAt(x: number, y: number): { char: string; gi: number } | null {
+    for (let gi = 0; gi < glyphs.length; gi++) {
+      const cell = cells[gi];
+      if (!cell) continue;
+      if (x >= cell.x && y >= cell.y && x <= cell.x + cell.w && y <= cell.y + cell.h) {
+        return { char: glyphs[gi].char, gi };
+      }
+    }
+    if (selected) {
+      const gi = glyphs.findIndex((g) => g.char === selected.char);
+      if (gi >= 0) return { char: selected.char, gi };
+    }
+    return glyphs[0] ? { char: glyphs[0].char, gi: 0 } : null;
+  }
+
+  function finishDraw(commit: boolean) {
+    const d = drawing.current;
+    drawing.current = null;
+    setCursor(null);
+    if (!d) return;
+    const stroke = draftRef.current[d.char]?.strokes[d.si];
+    if (!stroke || stroke.points.length < 2) {
+      setDraft((prev) => {
+        const base = prev[d.char];
+        if (!base) return prev;
+        const next = cloneEdit(base);
+        next.strokes.splice(d.si, 1);
+        const book = { ...prev, [d.char]: next };
+        draftRef.current = book;
+        return book;
+      });
+      return;
+    }
+    if (commit) commitChar(d.char);
+  }
+
+  function handleDrawClick(p: { x: number; y: number }) {
+    const now = performance.now();
+    const d = drawing.current;
+    const isDouble =
+      !!d && now - d.lastTime < 360 && Math.hypot(p.x - d.lastX, p.y - d.lastY) < 12;
+    if (d && isDouble) {
+      const gi = glyphs.findIndex((g) => g.char === d.char);
+      const cell = cells[gi];
+      const bounds = boundsByChar[d.char];
+      if (cell && bounds) {
+        const pt = clampPt(unprojectFromCell(p.x, p.y, cell, bounds));
+        updateStroke(d.char, d.si, (s) => {
+          const last = s.points[s.points.length - 1];
+          if (!last || Math.hypot(last[0] - pt[0], last[1] - pt[1]) > 8) s.points.push(pt);
+        });
+      }
+      queueMicrotask(() => finishDraw(true));
+      return;
+    }
+    if (!d) {
+      const hit = glyphAt(p.x, p.y);
+      if (!hit) return;
+      const cell = cells[hit.gi];
+      const bounds = boundsByChar[hit.char];
+      if (!cell || !bounds) return;
+      const pt = clampPt(unprojectFromCell(p.x, p.y, cell, bounds));
+      setDraft((prev) => {
+        const base = prev[hit.char];
+        if (!base) return prev;
+        const next = cloneEdit(base);
+        next.strokes.push({ points: [pt], pins: [] });
+        drawing.current = {
+          char: hit.char,
+          si: next.strokes.length - 1,
+          lastTime: now,
+          lastX: p.x,
+          lastY: p.y,
+        };
+        setSelected({ char: hit.char, si: next.strokes.length - 1 });
+        const book = { ...prev, [hit.char]: next };
+        draftRef.current = book;
+        return book;
+      });
+      return;
+    }
     const gi = glyphs.findIndex((g) => g.char === d.char);
     const cell = cells[gi];
     const bounds = boundsByChar[d.char];
-    const edit = draft[d.char];
+    if (!cell || !bounds) return;
+    const pt = clampPt(unprojectFromCell(p.x, p.y, cell, bounds));
+    updateStroke(d.char, d.si, (s) => {
+      s.points.push(pt);
+    });
+    d.lastTime = now;
+    d.lastX = p.x;
+    d.lastY = p.y;
+  }
+
+  useEffect(() => {
+    if (tool !== "draw" && drawing.current) finishDraw(false);
+  }, [tool]);
+
+  function onPointerMove(e: React.PointerEvent) {
+    const p = svgPoint(e);
+    if (!p) return;
+    if (tool === "draw" && drawing.current && !drag.current) {
+      setCursor(p);
+      return;
+    }
+    const d = drag.current;
+    if (!d) return;
+    const gi = glyphs.findIndex((g) => g.char === d.char);
+    const cell = cells[gi];
+    const bounds = boundsByChar[d.char];
+    const edit = draftRef.current[d.char];
     if (!cell || !edit || !bounds) return;
     if (d.type === "point") {
       updateStroke(d.char, d.si, (s) => {
@@ -181,28 +368,34 @@ export function PathEditor({ glyphs, book, tool, onCommit }: Props) {
   function endDrag(e: React.PointerEvent) {
     const d = drag.current;
     if (!d) return;
-    (e.target as Element).releasePointerCapture?.(e.pointerId);
+    svgRef.current?.releasePointerCapture(e.pointerId);
     drag.current = null;
     if (d.type === "pin" && !d.moved) {
-      const edit = draft[d.char];
+      const edit = draftRef.current[d.char];
       const pin = edit?.strokes[d.si]?.pins.find((p) => p.id === d.id);
       if (pin?.kind === "pressure") {
         setSlider({ char: d.char, si: d.si, id: d.id, x: d.x, y: d.y });
         return;
       }
     }
-    queueMicrotask(() => commitChar(d.char));
+    commitChar(d.char);
   }
 
   function startPointDrag(e: React.PointerEvent, char: string, si: number, pi: number) {
     e.stopPropagation();
     setSlider(null);
+    if (tool === "draw") {
+      const p = svgPoint(e);
+      if (p) handleDrawClick(p);
+      return;
+    }
     if (tool === "delete") {
       removePoint(char, si, pi);
       setSelected({ char, si });
       return;
     }
-    (e.currentTarget as Element).setPointerCapture(e.pointerId);
+    e.preventDefault();
+    capture(e);
     drag.current = { type: "point", char, si, pi };
     setSelected({ char, si });
   }
@@ -210,13 +403,19 @@ export function PathEditor({ glyphs, book, tool, onCommit }: Props) {
   function startPinDrag(e: React.PointerEvent, char: string, si: number, id: string) {
     e.stopPropagation();
     setSlider(null);
+    if (tool === "draw") {
+      const pt = svgPoint(e);
+      if (pt) handleDrawClick(pt);
+      return;
+    }
     if (tool === "delete") {
       removePin(char, si, id);
       setSelected({ char, si });
       return;
     }
+    e.preventDefault();
     const p = svgPoint(e);
-    (e.currentTarget as Element).setPointerCapture(e.pointerId);
+    capture(e);
     drag.current = { type: "pin", char, si, id, x: p?.x ?? 0, y: p?.y ?? 0, moved: false };
     setSelected({ char, si });
   }
@@ -225,6 +424,11 @@ export function PathEditor({ glyphs, book, tool, onCommit }: Props) {
     const p = svgPoint(e);
     if (!p) return;
     setSlider(null);
+    if (tool === "draw") {
+      e.preventDefault();
+      handleDrawClick(p);
+      return;
+    }
     type Hit = { char: string; si: number; hit: NonNullable<ReturnType<typeof nearestOnStroke>> };
     let best: Hit | null = null;
     for (let gi = 0; gi < glyphs.length; gi++) {
@@ -287,7 +491,7 @@ export function PathEditor({ glyphs, book, tool, onCommit }: Props) {
         if (near.kind === tool) s.pins = s.pins.filter((pin) => pin.id !== near.id);
         else {
           near.kind = tool;
-          if (tool === "pressure") near.pressure = near.pressure ?? 0.75;
+          if (tool === "pressure") near.pressure = near.pressure ?? DEFAULT_PRESSURE_MULT;
         }
         return;
       }
@@ -295,7 +499,7 @@ export function PathEditor({ glyphs, book, tool, onCommit }: Props) {
         id: newPinId(),
         t: pick.hit.t,
         kind: tool as PinKind,
-        pressure: tool === "pressure" ? 0.75 : undefined,
+        pressure: tool === "pressure" ? DEFAULT_PRESSURE_MULT : undefined,
       };
       s.pins.push(pin);
       if (tool === "pressure") {
@@ -346,9 +550,15 @@ export function PathEditor({ glyphs, book, tool, onCommit }: Props) {
 
   return (
     <>
+      {tool === "draw" && (
+        <div className="pointer-events-none absolute left-1/2 top-3 z-20 -translate-x-1/2 rounded-full bg-ink/80 px-4 py-1.5 text-center text-[0.72rem] tracking-wide text-paper shadow-[0_8px_20px_rgba(0,0,0,0.28)]">
+          Click to place nodes · Double-click to place the final node
+        </div>
+      )}
       <svg
         ref={svgRef}
         className="absolute inset-0 size-full touch-none"
+        style={{ touchAction: "none" }}
         width={size.w}
         height={size.h}
         viewBox={`0 0 ${size.w} ${size.h}`}
@@ -364,10 +574,13 @@ export function PathEditor({ glyphs, book, tool, onCommit }: Props) {
           if (!cell || !edit || !bounds) return null;
           return edit.strokes.map((stroke, si) => {
             const views = stroke.points.map((pt) => projectToCell(pt as [number, number], cell, bounds));
-            const d = views
+            const inferred = inferMode(stroke.points, classifyStroke(stroke.points));
+            const segs = coloredSegments(views, stroke.pins, inferred);
+            const hitD = views
               .map((v, i) => `${i === 0 ? "M" : "L"} ${v.x.toFixed(1)} ${v.y.toFixed(1)}`)
               .join(" ");
             const active = selected?.char === g.char && selected.si === si;
+            const startColor = MODE_COLOR[modeAlongStroke(0, stroke.pins, inferred)];
             const pinAt = (pin: PathPin) => {
               const segs: number[] = [0];
               for (let i = 1; i < views.length; i++) {
@@ -390,19 +603,22 @@ export function PathEditor({ glyphs, book, tool, onCommit }: Props) {
             };
             return (
               <g key={`${g.char}-${si}`}>
-                <path
-                  d={d}
-                  fill="none"
-                  stroke={active ? "#a33b2b" : "#1c1814"}
-                  strokeWidth={active ? 2.4 : 1.6}
-                  strokeLinejoin="round"
-                  strokeLinecap="round"
-                  opacity={active ? 0.95 : 0.45}
-                />
-                <path d={d} fill="none" stroke="transparent" strokeWidth={18} />
+                {segs.map((seg, i) => (
+                  <path
+                    key={i}
+                    d={seg.d}
+                    fill="none"
+                    stroke={seg.color}
+                    strokeWidth={active ? 2.6 : 1.8}
+                    strokeLinejoin="round"
+                    strokeLinecap="round"
+                    opacity={active ? 0.95 : 0.72}
+                  />
+                ))}
+                <path d={hitD} fill="none" stroke="transparent" strokeWidth={18} />
                 {views[0] && (
                   <g transform={`translate(${views[0].x} ${views[0].y})`}>
-                    <circle r={9} fill={active ? "#a33b2b" : "#1c1814"} />
+                    <circle r={9} fill={startColor} />
                     <text
                       textAnchor="middle"
                       y={4}
@@ -429,7 +645,7 @@ export function PathEditor({ glyphs, book, tool, onCommit }: Props) {
                       cy={v.y}
                       r={active ? 5 : 3.5}
                       fill="#efe6d4"
-                      stroke={active ? "#a33b2b" : "#1c1814"}
+                      stroke={active ? startColor : "#1c1814"}
                       strokeWidth={1.4}
                       style={{ pointerEvents: "none" }}
                     />
@@ -450,7 +666,7 @@ export function PathEditor({ glyphs, book, tool, onCommit }: Props) {
                       <title>
                         {PIN_META[pin.kind].ja} {PIN_META[pin.kind].label}
                         {pin.kind === "pressure"
-                          ? ` ${Math.round((pin.pressure ?? 0.75) * 100)}%`
+                          ? ` ×${(pin.pressure ?? DEFAULT_PRESSURE_MULT).toFixed(2)}`
                           : ""}
                       </title>
                     </g>
@@ -460,6 +676,29 @@ export function PathEditor({ glyphs, book, tool, onCommit }: Props) {
             );
           });
         })}
+        {(() => {
+          const d = drawing.current;
+          if (!d || !cursor) return null;
+          const gi = glyphs.findIndex((g) => g.char === d.char);
+          const cell = cells[gi];
+          const bounds = boundsByChar[d.char];
+          const stroke = draft[d.char]?.strokes[d.si];
+          const last = stroke?.points[stroke.points.length - 1];
+          if (!cell || !bounds || !last) return null;
+          const a = projectToCell(last as [number, number], cell, bounds);
+          return (
+            <line
+              x1={a.x}
+              y1={a.y}
+              x2={cursor.x}
+              y2={cursor.y}
+              stroke="#6f6860"
+              strokeWidth={1.4}
+              strokeDasharray="5 4"
+              opacity={0.7}
+            />
+          );
+        })()}
       </svg>
       {slider && sliderPin && (
         <div
@@ -471,18 +710,18 @@ export function PathEditor({ glyphs, book, tool, onCommit }: Props) {
           onPointerDown={(e) => e.stopPropagation()}
         >
           <p className="text-xs tracking-[0.14em] text-ink-soft uppercase">
-            Pressure
+            Multiplier
             <span className="ml-2 font-mono tabular-nums text-ink">
-              {Math.round((sliderPin.pressure ?? 0.75) * 100)}%
+              {(sliderPin.pressure ?? DEFAULT_PRESSURE_MULT).toFixed(2)}×
             </span>
           </p>
           <Slider
             className="mt-3"
-            min={0.08}
-            max={1}
-            step={0.02}
-            value={[sliderPin.pressure ?? 0.75]}
-            onValueChange={(v) => setPinPressure(v[0] ?? 0.75)}
+            min={PRESSURE_MULT_MIN}
+            max={PRESSURE_MULT_MAX}
+            step={0.05}
+            value={[sliderPin.pressure ?? DEFAULT_PRESSURE_MULT]}
+            onValueChange={(v) => setPinPressure(v[0] ?? DEFAULT_PRESSURE_MULT)}
             onValueCommit={commitSlider}
           />
         </div>
@@ -500,13 +739,40 @@ function PinMark({
   pressure?: number;
   active?: boolean;
 }) {
+  const ink = PIN_COLOR[kind];
+  if (kind === "soku") {
+    return <circle r={5.5} fill={ink} stroke="#efe6d4" strokeWidth={1.1} />;
+  }
+  if (kind === "hane") {
+    return <path d="M -5 6 L -5 -4 L 6 -4" fill="none" stroke={ink} strokeWidth={2.2} strokeLinecap="square" />;
+  }
+  if (kind === "saku") {
+    return <line x1={-6} y1={6} x2={6} y2={-6} stroke={ink} strokeWidth={2.4} strokeLinecap="round" />;
+  }
+  if (kind === "peck") {
+    return <polygon points="6,-5 6,5 -5,0" fill={ink} stroke="#efe6d4" strokeWidth={1.1} />;
+  }
+  if (kind === "horizontal") {
+    return (
+      <g>
+        <line x1={-8} y1={0} x2={8} y2={0} stroke={ink} strokeWidth={2.4} strokeLinecap="round" />
+      </g>
+    );
+  }
+  if (kind === "vertical") {
+    return (
+      <g>
+        <line x1={0} y1={-8} x2={0} y2={8} stroke={ink} strokeWidth={2.4} strokeLinecap="round" />
+      </g>
+    );
+  }
   if (kind === "ore") {
     return (
       <g>
         <path
           d="M -6 -6 H 6 V 6"
           fill="none"
-          stroke="#a33b2b"
+          stroke={ink}
           strokeWidth={2.2}
           strokeLinejoin="miter"
           strokeLinecap="square"
@@ -514,22 +780,26 @@ function PinMark({
       </g>
     );
   }
+  if (kind === "ryaku") {
+    return <polygon points="8,-6 8,6 -7,0" fill={ink} stroke="#efe6d4" strokeWidth={1.1} />;
+  }
   if (kind === "sweep") {
-    return <polygon points="-7,-6 -7,6 8,0" fill="#a33b2b" stroke="#efe6d4" strokeWidth={1.1} />;
+    return <polygon points="-7,-6 -7,6 8,0" fill={ink} stroke="#efe6d4" strokeWidth={1.1} />;
   }
   if (kind === "stop") {
     return (
-      <circle r={6.5} fill="#a33b2b" stroke="#efe6d4" strokeWidth={active ? 2 : 1.2} />
+      <circle r={6.5} fill={ink} stroke="#efe6d4" strokeWidth={active ? 2 : 1.2} />
     );
   }
   if (kind === "lift") {
-    return <polygon points="0,-8 7,6 -7,6" fill="#a33b2b" stroke="#efe6d4" strokeWidth={1.2} />;
+    return <polygon points="0,-8 7,6 -7,6" fill={ink} stroke="#efe6d4" strokeWidth={1.2} />;
   }
-  const p = pressure ?? 0.75;
+  const p = pressure ?? DEFAULT_PRESSURE_MULT;
+  const r = 2.2 + 2.2 * Math.min(2, p);
   return (
     <g>
-      <circle r={7} fill="#efe6d4" stroke={active ? "#a33b2b" : "#1c1814"} strokeWidth={1.4} />
-      <circle r={2.2 + 3.6 * p} fill="#1c1814" />
+      <circle r={7} fill="#efe6d4" stroke={active ? ink : "#1c1814"} strokeWidth={1.4} />
+      <circle r={r} fill={ink} />
     </g>
   );
 }

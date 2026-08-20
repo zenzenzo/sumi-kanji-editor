@@ -117,12 +117,36 @@ export function classifyStroke(median: number[][]): StrokeKind {
   return "stop";
 }
 
-/** 磔 goes right (and usually down). 掠 / 左払い goes left. */
+/** 磔 goes right (and usually down). */
 export function isRightwardSweep(median: number[][]): boolean {
   if (median.length < 2) return false;
   const a = median[0];
   const b = median[median.length - 1];
   return b[0] - a[0] > 48 && b[0] - a[0] > Math.abs(b[1] - a[1]) * 0.25;
+}
+
+/** 掠 / 左払い goes left (and usually down). */
+export function isLeftwardSweep(median: number[][]): boolean {
+  if (median.length < 2) return false;
+  const a = median[0];
+  const b = median[median.length - 1];
+  const left = a[0] - b[0];
+  return left > 48 && left > Math.abs(b[1] - a[1]) * 0.35;
+}
+
+/** 策 — rising diagonal (right and up in y-up glyph space). */
+export function isRisingDiagonal(median: number[][]): boolean {
+  if (median.length < 2) return false;
+  const a = median[0];
+  const b = median[median.length - 1];
+  return b[0] - a[0] > 36 && b[1] - a[1] > 36;
+}
+
+/** 啄 — short left flick, as opposed to a long 掠. */
+export function isShortLeftFlick(median: number[][]): boolean {
+  if (!isLeftwardSweep(median)) return false;
+  const pts = median.map(([x, y]) => ({ x, y }));
+  return pathLength(pts) < 280;
 }
 
 export function pressureAt(t: number, kind: StrokeKind): number {
@@ -196,4 +220,43 @@ export function resamplePreservingCorners(raw: Vec[], spacing: number, corners: 
     out.push(...resampled);
   }
   return out;
+}
+
+export function pointAtFrac(pts: Vec[], t: number): Vec {
+  if (pts.length === 0) return { x: 0, y: 0 };
+  if (pts.length === 1) return { ...pts[0] };
+  const target = clamp(t, 0, 1) * pathLength(pts);
+  let acc = 0;
+  for (let i = 1; i < pts.length; i++) {
+    const d = dist(pts[i - 1], pts[i]);
+    if (acc + d >= target) {
+      const u = d <= 1e-6 ? 0 : (target - acc) / d;
+      return { x: lerp(pts[i - 1].x, pts[i].x, u), y: lerp(pts[i - 1].y, pts[i].y, u) };
+    }
+    acc += d;
+  }
+  return { ...pts[pts.length - 1] };
+}
+
+/** Long 横 / 縦: axis of the first 90% of the path. */
+export function inferBone(median: number[][]): "vertical" | "horizontal" | null {
+  const pts = median.map(([x, y]) => ({ x, y }));
+  const len = pathLength(pts);
+  if (len < 80) return null;
+  const a = pts[0];
+  const b = pointAtFrac(pts, 0.9);
+  const dx = b.x - a.x;
+  const dy = b.y - a.y;
+  if (Math.abs(dy) > Math.abs(dx) * 1.65) return "vertical";
+  if (Math.abs(dx) > Math.abs(dy) * 1.65) return "horizontal";
+  return null;
+}
+
+/** Last third of the path travels left — 掠 / 鉤. */
+export function endsLeftward(median: number[][]): boolean {
+  const pts = median.map(([x, y]) => ({ x, y }));
+  if (pts.length < 2 || pathLength(pts) < 40) return false;
+  const a = pointAtFrac(pts, 0.62);
+  const b = pts[pts.length - 1];
+  return a.x - b.x > 28;
 }

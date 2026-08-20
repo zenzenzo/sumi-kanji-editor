@@ -27,6 +27,8 @@ export type StrokeSample = {
   hold: boolean;
   /** Round the tuft and blot — 止め pool, not a flat cutoff. */
   blot: boolean;
+  /** Extra tuft scale during 着筆. 1 = normal. */
+  spread?: number;
 };
 
 export type BrushSettings = {

@@ -132,6 +132,18 @@ export function Studio() {
     setBook(Object.fromEntries(glyphs.map((g) => [g.char, editsFromMedians(g.char, g.medians)])));
   }
 
+  function clearPaths() {
+    setBook((prev) => {
+      const next = { ...prev };
+      for (const g of glyphs) {
+        const edit: GlyphEdit = { char: g.char, custom: true, strokes: [] };
+        saveGlyphEdit(edit);
+        next[g.char] = edit;
+      }
+      return next;
+    });
+  }
+
   function applySuggestions() {
     setBook((prev) => {
       const next = { ...prev };
@@ -139,9 +151,10 @@ export function Studio() {
         const base = next[g.char] ?? editsFromMedians(g.char, g.medians);
         const edit: GlyphEdit = {
           char: g.char,
+          custom: base.custom,
           strokes: base.strokes.map((s, i) => ({
             points: s.points,
-            pins: suggestPins(s.points.length >= 2 ? s.points : (g.medians[i] ?? s.points)),
+            pins: suggestPins(s.points.length >= 2 ? s.points : (g.medians[i] ?? s.points), g.char, i),
           })),
         };
         saveGlyphEdit(edit);
@@ -447,11 +460,14 @@ export function Studio() {
                 <Button type="button" size="sm" variant="outline" onClick={resetPaths}>
                   Reset
                 </Button>
+                <Button type="button" size="sm" variant="outline" onClick={clearPaths}>
+                  Clear
+                </Button>
               </div>
               <p className="mt-3 text-[0.7rem] leading-relaxed text-ink-soft">
-                Drag the median. Click a pressure pin for a slider. 折れ folds a square
-                corner at full press. 磔 starts thin and presses to the reserved maximum.
-                止め pools, 払い lifts to a thin tip.
+                Drag the median. Type comes only from pins (側勒努趯策掠啄磔).
+                Pressure is a multiplier on that type — two pins blend. Path color
+                follows the active type after each pin.
               </p>
               {written.includes("永") && (
                 <div className="mt-3">

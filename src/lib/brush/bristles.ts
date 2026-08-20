@@ -14,9 +14,11 @@ type Hair = {
 };
 
 /**
- * Photoshop-style bristle tip: a tuft of hairs spring-damped to a moving
- * ferrule. Pressure splays the bundle; only hairs that reach the paper deposit
- * ink. Gap-filling happens later on the live stroke layer, not here.
+ * Photoshop / Krita-style bristle tip.
+ * Size is the fully-pressed footprint. Pressure both (1) scales that
+ * footprint so hairs pack together on a lift, and (2) decides which
+ * hairs reach the paper, centre first. Softness fans a little extra;
+ * stiffness resists splay.
  */
 export class BristleSim {
   private hairs: Hair[] = [];
@@ -66,6 +68,7 @@ export class BristleSim {
   }
 
   step(ctx: CanvasRenderingContext2D, sample: StrokeSample, dt: number) {
+    if (sample.pressure < 0.02) return;
     const s = this.settings;
     const k = (14 + 48 * s.stiffness) * (1.2 - 0.4 * s.softness);
     const damp = 2 * Math.sqrt(Math.max(k, 1)) * (0.62 + 0.4 * s.softness);
@@ -83,6 +86,13 @@ export class BristleSim {
         }
         const target = this.target(hair, sample);
         const lift = sample.hold ? 0 : 1 - sample.pressure;
+        if (!sample.hold && sample.pressure < 0.55) {
+          hair.tip.x = target.x;
+          hair.tip.y = target.y;
+          hair.vel.x = 0;
+          hair.vel.y = 0;
+          continue;
+        }
         const kNow = k * (1 + (sample.hold ? 0.9 : 1.4 * lift));
         const dNow = damp * (1 + (sample.hold ? 0.5 : 1.8 * lift));
         const ax = kNow * (target.x - hair.tip.x) - dNow * hair.vel.x;
@@ -104,6 +114,10 @@ export class BristleSim {
           hair.vel.x *= 0.72;
           hair.vel.y *= 0.72;
         }
+        if (sample.pressure < 0.04) {
+          hair.vel.x = 0;
+          hair.vel.y = 0;
+        }
       }
     }
 
@@ -115,17 +129,27 @@ export class BristleSim {
   }
 
   press(ctx: CanvasRenderingContext2D, sample: StrokeSample) {
+    if (sample.pressure < 0.02) return;
     this.plant(sample);
     this.stamp(ctx, sample, true);
+  }
+
+  /** Size slider is the pressed footprint. Pressure closes the tuft toward a point. */
+  private tuftScale(pressure: number): number {
+    const s = this.settings;
+    const u = clamp(pressure, 0, 1);
+    const floor = 0.06 + 0.04 * s.stiffness;
+    const fan = 1 + s.splay * 0.22 * u + s.softness * 0.1 * u;
+    return (floor + (1 - floor) * u) * fan;
   }
 
   private target(hair: Hair, sample: StrokeSample): Vec {
     const s = this.settings;
     const ca = Math.cos(sample.angle);
     const sa = Math.sin(sample.angle);
+    const scale = this.tuftScale(sample.pressure) * (sample.spread ?? 1);
     if (sample.blot) {
-      // Circular tuft — 止め is a round fude sitting still, not a flat chisel.
-      const spread = this.radius * (0.9 + 0.85 * sample.pressure) * (1 + s.splay * 0.25);
+      const spread = this.radius * scale * (1.05 + s.splay * 0.2);
       const u = hair.u * spread;
       const v = hair.v * spread;
       return {
@@ -133,13 +157,14 @@ export class BristleSim {
         y: sample.y + sa * u + ca * v,
       };
     }
-    const spread = this.radius * (1 + s.splay * sample.pressure * (0.2 + 0.7 * hair.radial));
-    const belly = 1 + 0.22 * Math.abs(Math.sin(sample.angle));
+    const spread = this.radius * scale * (1 + s.splay * sample.pressure * 0.35 * hair.radial);
+    const belly = 1 + 0.16 * Math.abs(Math.sin(sample.angle)) * scale;
     const u = hair.u * spread * 0.42;
     const v = hair.v * spread * belly;
-    const lead = sample.hold
-      ? 0
-      : this.radius * 0.4 * (1 - s.stiffness * 0.65) * (0.25 + 0.75 * sample.pressure);
+    const lead =
+      sample.hold || sample.pressure < 0.45
+        ? 0
+        : this.radius * scale * 0.35 * (1 - s.stiffness * 0.65);
     return {
       x: sample.x + ca * (u + lead) - sa * v,
       y: sample.y + sa * (u + lead) + ca * v,
@@ -147,12 +172,14 @@ export class BristleSim {
   }
 
   private contact(hair: Hair, pressure: number): number {
-    const threshold = 0.08 + 0.55 * hair.radial;
-    const amount = (pressure * (0.55 + 0.55 * hair.length) - threshold) / 0.7;
-    return clamp(amount, 0, 1);
+    if (pressure < 0.02) return 0;
+    const fringe = Math.max(0, hair.radial - 0.78);
+    const drop = fringe * 3.2 * (1 - pressure);
+    return clamp(1 - drop, 0.15, 1);
   }
 
   private stamp(pigment: CanvasRenderingContext2D, sample: StrokeSample, press = false) {
+    if (sample.pressure < 0.02) return;
     const s = this.settings;
     const wet = s.wetness;
     pigment.save();
@@ -167,29 +194,40 @@ export class BristleSim {
 
     const marks: { hair: Hair; touch: number; width: number; alpha: number; travel: number; blot: boolean }[] = [];
 
+    const scale = this.tuftScale(sample.pressure);
     for (let i = 0; i < this.hairs.length; i++) {
       const hair = this.hairs[i];
       const touch = this.contact(hair, sample.pressure);
       if (touch <= 0) continue;
 
-      if (wet < 0.5) {
+      if (sample.pressure < 0.5) {
+        const ca = Math.cos(sample.angle);
+        const sa = Math.sin(sample.angle);
+        const ahead = (hair.tip.x - sample.x) * ca + (hair.tip.y - sample.y) * sa;
+        if (ahead > 0.6) continue;
+      }
+
+      if (wet < 0.5 && scale > 0.4) {
         const skip = (Math.sin(i * 19.17 + sample.t * 40.3) + 1) * 0.5;
         if (skip > wet * 1.35 + touch * 0.35) continue;
       }
 
       const travel = dist(hair.prev, hair.tip);
       const blot = sample.blot || press;
-      const width =
+      if (!blot && travel < 0.45 && sample.pressure > 0.5) continue;
+      const width = Math.max(
+        0.4,
         this.radius *
-        (blot ? 0.14 : 0.11) *
-        hair.thickness *
-        (0.5 + 0.75 * sample.pressure) *
-        (0.75 + 0.35 * touch) *
-        (0.85 + 0.35 * wet);
+          scale *
+          (blot ? 0.18 : 0.16) *
+          hair.thickness *
+          (0.7 + 0.3 * scale) *
+          (0.85 + 0.35 * wet),
+      );
 
-      const alpha = (0.52 + 0.2 * wet) * (blot || press ? 1 : 0.88 + 0.12 * Math.min(1, travel / 1.4));
+      const alpha = (0.55 + 0.2 * wet) * (blot || press ? 1 : 0.9);
 
-      if (alpha < 0.08 || width < 0.28) continue;
+      if (alpha < 0.06) continue;
 
       marks.push({ hair, touch, width, alpha: Math.min(0.88, alpha), travel, blot });
       cx += hair.tip.x;
@@ -212,10 +250,10 @@ export class BristleSim {
       this.strokeHair(pigment, m.hair, m.travel, m.width, m.blot);
     }
 
-    if (touchN > 2) {
+    if (touchN > 1) {
       cx /= touchN;
       cy /= touchN;
-      if (wet >= 0.3) {
+      if (wet >= 0.22 || scale < 0.5) {
         const hull = convexHull(marks.map((mk) => mk.hair.tip));
         if (hull.length >= 3) {
           pigment.globalAlpha = 0.34 + 0.32 * wet;
@@ -254,9 +292,9 @@ export class BristleSim {
     width: number,
     blot = false,
   ) {
-    if (blot || travel < 0.35) {
+    if (blot) {
       ctx.beginPath();
-      ctx.arc(hair.tip.x, hair.tip.y, width * (blot ? 0.62 : 0.5), 0, Math.PI * 2);
+      ctx.arc(hair.tip.x, hair.tip.y, width * 0.62, 0, Math.PI * 2);
       ctx.fill();
     } else {
       ctx.beginPath();

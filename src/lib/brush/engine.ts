@@ -1,24 +1,25 @@
 import type { BrushSettings, StrokeKind, StrokeSample, Vec } from "@/lib/kanji/types";
 import { BristleSim } from "./bristles";
 import {
-  BODY_PRESSURE,
+  inferMode,
+  modeAlongStroke,
   oreStrength,
-  pressureFromPins,
+  pressureAlongStroke,
+  pressureMultiplier,
   settleFromPins,
-  sweepPinT,
-  takuPressure,
   type GlyphEdit,
+  type PathPin,
   type SettleStyle,
+  type StrokeMode,
 } from "./edits";
 import {
   classifyStroke,
   cornerIndices,
   dist,
-  isRightwardSweep,
+  inferBone,
   lerp,
   nearestVertexIndex,
   pathLength,
-  pressureAt,
   resamplePreservingCorners,
   resampleSmooth,
   vertexPathT,
@@ -110,14 +111,27 @@ export function prepareGlyph(
   cell: Cell,
   edit?: GlyphEdit,
 ): PreparedGlyph {
-  const bounds = glyphBounds(medians);
-  const strokes: PreparedStroke[] = medians.map((rawMedian, si) => {
-    const median =
-      edit?.strokes[si]?.points && edit.strokes[si].points.length >= 2
-        ? edit.strokes[si].points
-        : rawMedian;
-    const pins = edit?.strokes[si]?.pins ?? [];
+  const sources: { points: number[][]; pins: PathPin[] }[] = [];
+  if (edit?.custom) {
+    for (const s of edit.strokes) {
+      if (s.points.length >= 2) sources.push({ points: s.points, pins: s.pins ?? [] });
+    }
+  } else {
+    const n = Math.max(medians.length, edit?.strokes.length ?? 0);
+    for (let si = 0; si < n; si++) {
+      const edited = edit?.strokes[si];
+      const points =
+        edited?.points && edited.points.length >= 2 ? edited.points : (medians[si] ?? null);
+      if (!points || points.length < 2) continue;
+      sources.push({ points, pins: edited?.pins ?? [] });
+    }
+  }
+  const bounds = glyphBounds(medians.length ? medians : sources.map((s) => s.points));
+  const strokes: PreparedStroke[] = sources.map((src, si) => {
+    const median = src.points;
+    const pins = src.pins;
     const kind = classifyStroke(median);
+    const inferred = inferMode(median, kind);
     const settle = settleFromPins(pins, kind);
     const mapped = median.map((p) => projectToCell(p as [number, number], cell, bounds));
     const autoCorners = cornerIndices(mapped);
@@ -129,10 +143,7 @@ export function prepareGlyph(
       ...corners.map((i) => vertexPathT(mapped, i)),
       ...pins.filter((p) => p.kind === "ore").map((p) => p.t),
     ];
-    const sweepT = sweepPinT(pins);
-    const takuT =
-      sweepT ?? (kind === "sweep" && isRightwardSweep(median) && pins.length === 0 ? 0.94 : null);
-    const finish: SettleStyle = takuT != null && settle === "auto" ? "taku" : settle;
+    let finish: SettleStyle = settle;
     const spacing =
       kind === "dot"
         ? Math.max(0.35, Math.min(cell.w, cell.h) / 360)
@@ -150,15 +161,12 @@ export function prepareGlyph(
       if (i > 0) acc += dist(smooth[i - 1], smooth[i]);
       const t = len > 0 ? acc / len : 0;
       const angle = Math.atan2(next.y - prev.y, next.x - prev.x);
-      const belly = 0.84 + 0.28 * Math.abs(Math.sin(angle));
-      const pinned = pressureFromPins(t, pins);
-      let pressure: number;
-      if (takuT != null) {
-        pressure = takuPressure(t, takuT);
-      } else {
-        const body = (pinned == null ? pressureAt(t, kind) * belly : pinned) * BODY_PRESSURE;
-        pressure = lerp(clamp01(body), 1, oreStrength(t, oreTs));
-      }
+      const along = pressureAlongStroke(t, pins, { kind, inferred });
+      const pressure = lerp(
+        clamp01(along * pressureMultiplier(t, pins)),
+        1,
+        oreStrength(t, oreTs),
+      );
       samples.push({
         x: smooth[i].x,
         y: smooth[i].y,
@@ -171,6 +179,15 @@ export function prepareGlyph(
       });
     }
     insertOreMiters(samples, oreTs, tuftRadius(cell, 1), kind);
+    const startMode = modeAlongStroke(0, pins, inferred);
+    const bone = inferBone(median);
+    let entryMode: StrokeMode | null = null;
+    if (startMode === "vertical" || startMode === "horizontal" || startMode === "peck") {
+      entryMode = startMode;
+    } else if (startMode === "auto" || startMode === "pressure") {
+      entryMode = bone;
+    }
+    if (entryMode) prependEntry(samples, entryMode, tuftRadius(cell, 1), pressureMultiplier(0, pins));
     appendSettle(samples, kind, finish, tuftRadius(cell, 1));
     const unitLen = pathLength(median.map(([x, y]) => ({ x, y })));
     const duration =
@@ -180,7 +197,16 @@ export function prepareGlyph(
           ? 480
           : finish === "tome" || (finish === "auto" && kind === "stop")
             ? 420
-            : 300) + unitLen * 0.9;
+            : 300) +
+      unitLen * 0.9 +
+      (startMode === "vertical" ||
+      startMode === "horizontal" ||
+      startMode === "peck" ||
+      entryMode === "vertical" ||
+      entryMode === "horizontal" ||
+      entryMode === "peck"
+        ? 160
+        : 0);
     return {
       samples,
       kind,
@@ -271,23 +297,85 @@ function insertOreMiters(
   }
 }
 
-/** 磔 ends in a press — bristles catch up at full weight, no reverse, no fade. */
-function appendTakuPress(samples: StrokeSample[], kind: StrokeKind) {
+/**
+ * 着筆: lean the tuft onto P₀ before the editable path advances.
+ * entryProgress 0→1, pathProgress stays 0. Then normal samples begin.
+ */
+function prependEntry(
+  samples: StrokeSample[],
+  mode: StrokeMode,
+  radius: number,
+  mult: number,
+) {
+  if (samples.length < 2) return;
+  const spec =
+    mode === "vertical" || mode === "peck"
+      ? { p0: 0.38, p1: 0.82, s0: 0.62, s1: 1.15, dist: 1.38, along: 0.48, leanT: 0.5, leanN: -0.72, n: 12 }
+      : mode === "horizontal"
+        ? { p0: 0.36, p1: 0.78, s0: 0.65, s1: 1.12, dist: 0.95, along: 0.32, leanT: 0.55, leanN: 0.65, n: 11 }
+        : null;
+  if (!spec) return;
+
+  const first = samples[0];
+  const tx = Math.cos(first.angle);
+  const ty = Math.sin(first.angle);
+  const nx = -ty;
+  const ny = tx;
+  let lx = spec.leanT * tx + spec.leanN * nx;
+  let ly = spec.leanT * ty + spec.leanN * ny;
+  const llen = Math.hypot(lx, ly) || 1;
+  lx /= llen;
+  ly /= llen;
+  const angle0 = Math.atan2(ly, lx);
+  const angle1 = first.angle;
+  const D = Math.max(4, radius * spec.dist);
+  const along = Math.max(2, radius * spec.along);
+  const entryFrac = 0.18;
+  const n = spec.n;
+  const ease = (s: number) => 1 - (1 - s) * (1 - s) * (1 - s);
+
+  for (const s of samples) s.t = entryFrac + s.t * (1 - entryFrac);
+
+  const extra: StrokeSample[] = [];
+  for (let i = 0; i <= n; i++) {
+    const s = i / n;
+    const e = ease(s);
+    extra.push({
+      x: first.x - lx * D * (1 - e) + tx * along * e,
+      y: first.y - ly * D * (1 - e) + ty * along * e,
+      angle: angle0 + (angle1 - angle0) * e,
+      t: entryFrac * s,
+      pressure: clamp01((spec.p0 + (spec.p1 - spec.p0) * e) * mult),
+      kind: first.kind,
+      hold: false,
+      blot: false,
+      spread: spec.s0 + (spec.s1 - spec.s0) * e,
+    });
+  }
+  samples.unshift(...extra);
+}
+
+/** 磔: keep moving off the tip while pressure collapses — no parked blot. */
+function appendTakuPress(samples: StrokeSample[], kind: StrokeKind, radius: number) {
   const last = samples[samples.length - 1];
-  const pathFrac = 0.82;
+  const pathFrac = 0.9;
   for (const s of samples) s.t *= pathFrac;
+  const a = last.angle;
+  const tx = Math.cos(a);
+  const ty = Math.sin(a);
+  const travel = Math.max(5, radius * 0.7);
   const n = 16;
   for (let i = 1; i <= n; i++) {
     const u = i / n;
     samples.push({
-      x: last.x,
-      y: last.y,
-      angle: last.angle,
+      x: last.x + tx * travel * u,
+      y: last.y + ty * travel * u,
+      angle: a,
       t: pathFrac + u * (1 - pathFrac),
-      pressure: 1,
+      pressure: Math.max(0, last.pressure * Math.pow(1 - u, 1.8)),
       kind,
-      hold: true,
-      blot: u > 0.45,
+      hold: false,
+      blot: false,
     });
   }
 }
@@ -303,16 +391,8 @@ function appendSettle(
   radius: number,
 ) {
   if (samples.length === 0) return;
-  const style =
-    settle === "auto"
-      ? kind === "sweep"
-        ? "harai"
-        : kind === "hook"
-          ? "hane"
-          : kind === "dot"
-            ? "dot"
-            : "tome"
-      : settle;
+  const style = settle === "auto" ? "none" : settle;
+  if (style === "none") return;
 
   if (style === "tome") {
     appendTomeHook(samples, kind, radius);
@@ -320,26 +400,23 @@ function appendSettle(
   }
 
   if (style === "taku") {
-    appendTakuPress(samples, kind);
+    appendTakuPress(samples, kind, radius);
+    return;
+  }
+
+  if (style === "harai" || style === "hane") {
     return;
   }
 
   const last = samples[samples.length - 1];
-  const pathFrac = style === "dot" ? 0.3 : style === "harai" ? 0.76 : 0.8;
-  const nSettle = style === "dot" ? 28 : style === "harai" ? 18 : 16;
+  const pathFrac = 0.3;
+  const nSettle = 28;
   for (const s of samples) s.t *= pathFrac;
 
   for (let i = 1; i <= nSettle; i++) {
     const u = i / nSettle;
-    let pressure: number;
-    if (style === "dot") {
-      pressure = u < 0.4 ? lerp(Math.max(last.pressure, 0.7), 1, u / 0.4) : lerp(1, 0.1, (u - 0.4) / 0.6);
-    } else if (style === "harai") {
-      pressure = Math.max(0.2, last.pressure * Math.pow(1 - u, 0.7));
-    } else {
-      const tail = u < 0.35 ? last.pressure : last.pressure * Math.pow(1 - (u - 0.35) / 0.65, 1.15);
-      pressure = Math.max(0.18, tail);
-    }
+    const pressure =
+      u < 0.4 ? lerp(Math.max(last.pressure, 0.7), 1, u / 0.4) : lerp(1, 0.1, (u - 0.4) / 0.6);
     samples.push({
       x: last.x,
       y: last.y,
@@ -348,7 +425,7 @@ function appendSettle(
       pressure: Math.min(1, Math.max(0, pressure)),
       kind,
       hold: true,
-      blot: style === "dot",
+      blot: true,
     });
   }
 }
@@ -476,6 +553,7 @@ export function simulateStrokeRange(
   const end = Math.min(stroke.samples.length - 1, toIdx);
   for (let i = start; i <= end; i++) {
     const sample = stroke.samples[i];
+    if (sample.pressure < 0.02) break;
     if (i === 0) {
       sim.press(stamp, sample);
     } else {
