@@ -1,5 +1,4 @@
 import type { BrushSettings, StrokeSample, Vec } from "@/lib/kanji/types";
-import { clamp, dist } from "./geometry";
 
 /**
  * Xu et al. (Eurographics 2002) — "A Solid Model Based Virtual Hairy Brush"
@@ -278,10 +277,8 @@ export class BristleSim {
         continue;
       }
       const k = p.stress > threshold * 1.45 ? 3 : 2;
-      const ca = Math.cos(sample.angle);
-      const sa = Math.sin(sample.angle);
-      const nx = -sa;
-      const ny = ca;
+      const nx = -Math.sin(sample.angle);
+      const ny = Math.cos(sample.angle);
       const sep =
         this.radius * (0.22 + 0.35 * Math.min(1, p.stress - threshold)) * Math.sqrt(p.mass);
       for (let i = 0; i < k; i++) {
@@ -328,7 +325,6 @@ export class BristleSim {
 
   private deposit(ctx: CanvasRenderingContext2D, sample: StrokeSample, press: boolean) {
     if (sample.pressure < 0.02) return;
-    const s = this.settings;
     ctx.save();
     ctx.fillStyle = this.ink;
     ctx.strokeStyle = this.ink;
@@ -362,7 +358,6 @@ export class BristleSim {
       ctx.save();
       ctx.translate(midX, midY);
       ctx.rotate(ang + p.rot * 0.5);
-      ctx.globalAlpha = Math.min(0.9, alpha);
 
       if (p.wetness >= 0.35) {
         ctx.globalAlpha = Math.min(0.55, alpha * 0.45 * p.wetness);
