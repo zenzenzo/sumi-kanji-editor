@@ -26,23 +26,29 @@ export function angleDiff(a: number, b: number): number {
   return d;
 }
 
-function catmullRom(p0: Vec, p1: Vec, p2: Vec, p3: Vec, t: number): Vec {
-  const t2 = t * t;
-  const t3 = t2 * t;
-  return {
-    x:
-      0.5 *
-      (2 * p1.x +
-        (-p0.x + p2.x) * t +
-        (2 * p0.x - 5 * p1.x + 4 * p2.x - p3.x) * t2 +
-        (-p0.x + 3 * p1.x - 3 * p2.x + p3.x) * t3),
-    y:
-      0.5 *
-      (2 * p1.y +
-        (-p0.y + p2.y) * t +
-        (2 * p0.y - 5 * p1.y + 4 * p2.y - p3.y) * t2 +
-        (-p0.y + 3 * p1.y - 3 * p2.y + p3.y) * t3),
+function centripetalCatmullRom(p0: Vec, p1: Vec, p2: Vec, p3: Vec, t: number): Vec {
+  const d01 = dist(p0, p1);
+  const d12 = dist(p1, p2);
+  const d23 = dist(p2, p3);
+  if (d12 < 1e-8) return { ...p1 };
+  const t0 = 0;
+  const t1 = t0 + Math.sqrt(Math.max(d01, 1e-8));
+  const t2 = t1 + Math.sqrt(d12);
+  const t3 = t2 + Math.sqrt(Math.max(d23, 1e-8));
+  const T = t1 + t * (t2 - t1);
+
+  const mix = (a: Vec, b: Vec, ta: number, tb: number, tt: number): Vec => {
+    if (Math.abs(tb - ta) < 1e-8) return { ...a };
+    const u = (tt - ta) / (tb - ta);
+    return { x: a.x + (b.x - a.x) * u, y: a.y + (b.y - a.y) * u };
   };
+
+  const a1 = mix(p0, p1, t0, t1, T);
+  const a2 = mix(p1, p2, t1, t2, T);
+  const a3 = mix(p2, p3, t2, t3, T);
+  const b1 = mix(a1, a2, t0, t2, T);
+  const b2 = mix(a2, a3, t1, t3, T);
+  return mix(b1, b2, t1, t2, T);
 }
 
 /** Smooth a polyline through Catmull-Rom, then resample to even spacing. */
@@ -60,7 +66,7 @@ export function resampleSmooth(raw: Vec[], spacing: number): Vec[] {
     const p3 = padded[i + 3];
     const steps = 10;
     for (let s = 0; s < steps; s++) {
-      dense.push(catmullRom(p0, p1, p2, p3, s / steps));
+      dense.push(centripetalCatmullRom(p0, p1, p2, p3, s / steps));
     }
   }
   dense.push(raw[raw.length - 1]);

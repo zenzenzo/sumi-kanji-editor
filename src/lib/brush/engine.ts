@@ -13,6 +13,7 @@ import {
   type StrokeMode,
 } from "./edits";
 import {
+  angleDiff,
   classifyStroke,
   cornerIndices,
   dist,
@@ -22,7 +23,6 @@ import {
   pathLength,
   resamplePreservingCorners,
   resampleSmooth,
-  vertexPathT,
 } from "./geometry";
 import type { WetPaper } from "./wet";
 
@@ -139,10 +139,7 @@ export function prepareGlyph(
       .filter((p) => p.kind === "ore")
       .map((p) => nearestVertexIndex(mapped, p.t));
     const corners = [...new Set([...autoCorners, ...pinCorners])];
-    const oreTs = [
-      ...corners.map((i) => vertexPathT(mapped, i)),
-      ...pins.filter((p) => p.kind === "ore").map((p) => p.t),
-    ];
+    const oreTs = pins.filter((p) => p.kind === "ore").map((p) => p.t);
     let finish: SettleStyle = settle;
     const spacing =
       kind === "dot"
@@ -178,6 +175,7 @@ export function prepareGlyph(
         blot: false,
       });
     }
+    stabilizeAngles(samples);
     insertOreMiters(samples, oreTs, tuftRadius(cell, 1), kind);
     const startMode = modeAlongStroke(0, pins, inferred);
     const bone = inferBone(median);
@@ -221,6 +219,19 @@ export function prepareGlyph(
 
 function clamp01(n: number) {
   return Math.max(0, Math.min(1, n));
+}
+
+/** Keep the tuft from flipping on a Catmull-Rom cusp. */
+function stabilizeAngles(samples: StrokeSample[]) {
+  if (samples.length < 3) return;
+  let prev = samples[0].angle;
+  for (let i = 1; i < samples.length; i++) {
+    const d = angleDiff(prev, samples[i].angle);
+    if (Math.abs(d) > 0.65) {
+      samples[i].angle = prev + Math.max(-0.4, Math.min(0.4, d));
+    }
+    prev = samples[i].angle;
+  }
 }
 
 /**
@@ -309,11 +320,13 @@ function prependEntry(
 ) {
   if (samples.length < 2) return;
   const spec =
-    mode === "vertical" || mode === "peck"
-      ? { p0: 0.38, p1: 0.82, s0: 0.62, s1: 1.15, dist: 1.38, along: 0.48, leanT: 0.5, leanN: -0.72, n: 12 }
-      : mode === "horizontal"
-        ? { p0: 0.36, p1: 0.78, s0: 0.65, s1: 1.12, dist: 0.95, along: 0.32, leanT: 0.55, leanN: 0.65, n: 11 }
-        : null;
+    mode === "peck"
+      ? { p0: 0.38, p1: 1, s0: 0.62, s1: 1.15, dist: 1.38, along: 0.48, leanT: 0.5, leanN: -0.72, n: 12 }
+      : mode === "vertical"
+        ? { p0: 0.38, p1: 0.82, s0: 0.62, s1: 1.15, dist: 1.38, along: 0.48, leanT: 0.5, leanN: -0.72, n: 12 }
+        : mode === "horizontal"
+          ? { p0: 0.36, p1: 0.78, s0: 0.65, s1: 1.12, dist: 0.95, along: 0.32, leanT: 0.55, leanN: 0.65, n: 11 }
+          : null;
   if (!spec) return;
 
   const first = samples[0];
@@ -559,8 +572,25 @@ export function simulateStrokeRange(
     } else {
       const prev = stroke.samples[i - 1];
       const gap = dist(prev, sample);
-      const dt = sample.hold || gap < 0.2 ? 0.014 : Math.min(0.028, 0.008 + gap / 420);
-      sim.step(stamp, sample, dt);
+      const stepR = tuftRadius(cell, settings.size);
+      if (gap > stepR * 0.85 && !sample.hold && !prev.hold) {
+        const n = Math.min(8, Math.ceil(gap / (stepR * 0.45)));
+        for (let k = 1; k <= n; k++) {
+          const u = k / n;
+          const mid: StrokeSample = {
+            ...sample,
+            x: lerp(prev.x, sample.x, u),
+            y: lerp(prev.y, sample.y, u),
+            pressure: lerp(prev.pressure, sample.pressure, u),
+            t: lerp(prev.t, sample.t, u),
+          };
+          if (mid.pressure < 0.02) break;
+          sim.step(stamp, mid, Math.min(0.024, 0.008 + (gap / n) / 420));
+        }
+      } else {
+        const dt = sample.hold || gap < 0.2 ? 0.014 : Math.min(0.028, 0.008 + gap / 420);
+        sim.step(stamp, sample, dt);
+      }
     }
   }
   if (end === stroke.samples.length - 1) {

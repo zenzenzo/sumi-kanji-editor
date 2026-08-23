@@ -46,9 +46,9 @@ Default body is **50%** of the fully-pressed tuft (the Size slider). 2× pressur
 | **努** | Vertical | Thirds: **50% → 45%**, hold **45%**, **45% → 50%**. 着筆 at the start |
 | **趯** | Hook | Hold 50% for 40%, then taper to 0 (はね) |
 | **策** | Rise | 11% → 50% by 45% of the span, then taper. No 着筆 |
-| **掠** | Sweep left | 50% → 0 over the whole span, `(1−t)^0.88` |
-| **啄** | Short left | Steeper 50% → 0, `(1−t)^1.35`. Same 着筆 as 努 |
-| **磔** | Splay right | 10% → 100% over the first 80%, then 100% → 0 |
+| **掠** | Sweep left | ~67% → 0 over the whole span, `(1−t)^0.88` (⅓ heavier than the pressure at the start of the span) |
+| **啄** | Short left | **100% → 0**, `(1−t)^1.35`. 着筆 at the start, landing at full pressure |
+| **磔** | Splay right | 10% → 100% over the first 75%, then taper to 0 on the path |
 
 **永 suggested layout**
 

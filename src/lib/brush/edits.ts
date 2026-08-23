@@ -77,8 +77,8 @@ export const PIN_META: Record<PinKind, { label: string; ja: string; hint: string
   hane: { label: "Hook", ja: "趯", hint: "趯 — upward hook / はね" },
   saku: { label: "Rise", ja: "策", hint: "策 — rising diagonal 払い" },
   ryaku: { label: "Sweep left", ja: "掠", hint: "掠 — long left 払い, tapers the whole way" },
-  peck: { label: "Short left", ja: "啄", hint: "啄 — short left flick" },
-  sweep: { label: "Splay right", ja: "磔", hint: "磔 — thicken through 80%, then taper off" },
+  peck: { label: "Short left", ja: "啄", hint: "啄 — max at the start, then a steep taper" },
+  sweep: { label: "Splay right", ja: "磔", hint: "磔 — build to full over 75%, then taper on the path" },
   ore: { label: "Fold", ja: "折", hint: "折れ — press and fold a square corner" },
   stop: { label: "Stop", ja: "止", hint: "止め — halt, pool of ink" },
   lift: { label: "Lift", ja: "払", hint: "払い — sweep or lift off" },
@@ -86,6 +86,8 @@ export const PIN_META: Record<PinKind, { label: string; ja: string; hint: string
 
 /** Default body weight. Pressure pins multiply this. 2× reaches the reserved max. */
 export const BODY_PRESSURE = 0.5;
+/** 掠 starts ~33% heavier than the pressure it would otherwise inherit. */
+const RYAKU_START_BOOST = 4 / 3;
 export const DEFAULT_PRESSURE_MULT = 1;
 export const PRESSURE_MULT_MIN = 0.2;
 export const PRESSURE_MULT_MAX = 2;
@@ -258,8 +260,9 @@ export function pinPressure(pin: PathPin): number {
     case "soku":
     case "hane":
     case "saku":
-    case "peck":
       return BODY_PRESSURE;
+    case "peck":
+      return 1;
   }
 }
 
@@ -372,11 +375,17 @@ function evalMode(
       return Math.max(0, startP * peak);
     }
     case "sweep": {
-      if (u <= 0.8) {
-        const s = u / 0.8;
-        return lerp(Math.min(startP, 0.12), 1, s * s * (3 - 2 * s));
+      const a = Math.min(Math.max(startP, 0.08), 0.14);
+      if (!complete) {
+        const s = u;
+        return lerp(a, 1, s * s);
       }
-      return Math.max(0, Math.pow(1 - (u - 0.8) / 0.2, 2.4));
+      if (u <= 0.75) {
+        const s = u / 0.75;
+        return lerp(a, 1, s * s);
+      }
+      const s = (u - 0.75) / 0.25;
+      return Math.max(0, Math.pow(1 - s, 1.65));
     }
     case "hane":
       return u < 0.4 ? startP : Math.max(0, startP * Math.pow(1 - (u - 0.4) / 0.6, 1.25));
@@ -394,6 +403,8 @@ function evalMode(
 
 function startPressure(mode: StrokeMode): number {
   if (mode === "sweep") return 0.1;
+  if (mode === "peck") return 1;
+  if (mode === "ryaku") return clamp(BODY_PRESSURE * RYAKU_START_BOOST, 0, 1);
   if (mode === "saku") return BODY_PRESSURE;
   return BODY_PRESSURE;
 }
@@ -427,7 +438,11 @@ export function pressureAlongStroke(t: number, pins: PathPin[], _hint: StartHint
     mode = pin.kind as StrokeMode;
     if (pin.kind === "horizontal" || pin.kind === "vertical" || pin.kind === "soku") {
       startP = BODY_PRESSURE;
-    } else if (pin.kind === "ryaku" || pin.kind === "peck" || pin.kind === "saku") {
+    } else if (pin.kind === "peck") {
+      startP = 1;
+    } else if (pin.kind === "ryaku") {
+      startP = clamp(Math.max(startP, BODY_PRESSURE) * RYAKU_START_BOOST, 0, 1);
+    } else if (pin.kind === "saku") {
       startP = Math.max(startP, BODY_PRESSURE);
     } else if (pin.kind === "stop") {
       startP = Math.max(startP, 0.92);
@@ -491,7 +506,7 @@ export function ryakuPinT(pins: PathPin[]): number | null {
 }
 
 /** 掠: taper for the whole stroke, not only the tip. */
-export function ryakuPressure(t: number, start = BODY_PRESSURE): number {
+export function ryakuPressure(t: number, start = BODY_PRESSURE * RYAKU_START_BOOST): number {
   const u = clamp(t, 0, 1);
   return Math.max(0, start * Math.pow(1 - u, 0.88));
 }
@@ -501,15 +516,15 @@ export function sweepPinT(pins: PathPin[]): number | null {
   return sweeps.length ? sweeps[sweeps.length - 1].t : null;
 }
 
-/** Slow build to full pressure over 80% of the stroke, then a sharp taper to 0. */
+/** Slow build to full pressure over 75% of the stroke, then taper to 0 on the path. */
 export function takuPressure(t: number): number {
   const u = clamp(t, 0, 1);
-  if (u <= 0.8) {
-    const s = u / 0.8;
-    return lerp(0.1, 1, s * s * (3 - 2 * s));
+  if (u <= 0.75) {
+    const s = u / 0.75;
+    return lerp(0.1, 1, s * s);
   }
-  const s = (u - 0.8) / 0.2;
-  return Math.max(0, Math.pow(1 - s, 2.4));
+  const s = (u - 0.75) / 0.25;
+  return Math.max(0, Math.pow(1 - s, 1.65));
 }
 
 export function settleFromPins(pins: PathPin[], kind: StrokeKind): SettleStyle {
@@ -518,7 +533,7 @@ export function settleFromPins(pins: PathPin[], kind: StrokeKind): SettleStyle {
     .sort((a, b) => a.t - b.t);
   if (!ending.length) return "auto";
   const last = ending[ending.length - 1];
-  if (last.kind === "sweep") return "taku";
+  if (last.kind === "sweep") return "harai";
   if (last.kind === "ryaku" || last.kind === "peck" || last.kind === "saku" || last.kind === "soku")
     return "harai";
   if (last.kind === "hane") return "hane";
