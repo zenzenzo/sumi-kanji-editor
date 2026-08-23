@@ -534,9 +534,37 @@ export function PathEditor({ glyphs, book, tool, onCommit }: Props) {
   }
 
   function removePoint(char: string, si: number, pi: number) {
-    updateStroke(char, si, (s) => {
-      if (s.points.length > 2) s.points.splice(pi, 1);
+    const stroke = draftRef.current[char]?.strokes[si];
+    const dropStroke = !stroke || stroke.points.length <= 2;
+    setDraft((prev) => {
+      const base = prev[char];
+      if (!base) return prev;
+      const next = cloneEdit(base);
+      const s = next.strokes[si];
+      if (!s) return prev;
+      if (s.points.length <= 2) {
+        next.strokes.splice(si, 1);
+        next.custom = true;
+      } else {
+        s.points.splice(pi, 1);
+      }
+      dirty.current = true;
+      const book = { ...prev, [char]: next };
+      draftRef.current = book;
+      return book;
     });
+    if (dropStroke) {
+      if (slider?.char === char && slider.si === si) setSlider(null);
+      else if (slider?.char === char && slider.si > si) {
+        setSlider({ ...slider, si: slider.si - 1 });
+      }
+      setSelected((sel) => {
+        if (!sel || sel.char !== char) return sel;
+        if (sel.si === si) return null;
+        if (sel.si > si) return { char, si: sel.si - 1 };
+        return sel;
+      });
+    }
     queueMicrotask(() => commitChar(char));
   }
 
