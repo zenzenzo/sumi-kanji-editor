@@ -71,7 +71,7 @@ const STORAGE_KEY = "sumi:edits:v2";
 
 export const PIN_META: Record<PinKind, { label: string; ja: string; hint: string }> = {
   pressure: { label: "Pressure", ja: "圧", hint: "Multiplier on the stroke type — blends between two pins" },
-  soku: { label: "Dot", ja: "側", hint: "側 — 点, press then lift" },
+  soku: { label: "Dot", ja: "側", hint: "側 — 点, ~30% → 80%" },
   horizontal: { label: "Horizontal", ja: "勒", hint: "勒 — even horizontal body" },
   vertical: { label: "Vertical", ja: "努", hint: "努 — 50% → 45% → hold 45% → 50%; 着筆 at the start" },
   hane: { label: "Hook", ja: "趯", hint: "趯 — upward hook / はね" },
@@ -364,7 +364,7 @@ function evalMode(
       return lerp(lo, hi, (u - 2 / 3) / (1 / 3));
     }
     case "soku":
-      return bodyLevel * (0.55 + 0.55 * Math.sin(Math.PI * Math.min(1, u * 1.12)));
+      return lerp(0.3, 0.8, u);
     case "ryaku":
       return Math.max(0, startP * Math.pow(1 - u, 0.88));
     case "peck":

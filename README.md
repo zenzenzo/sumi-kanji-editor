@@ -41,7 +41,7 @@ Default body is **50%** of the fully-pressed tuft (the Size slider). 2× pressur
 
 | Pin | English | Envelope |
 | --- | --- | --- |
-| **側** | Dot | Press-lift bump, ~28% → 55% → 28%. A 点, not a line |
+| **側** | Dot | ~30% → 80%. A 点, not a line |
 | **勒** | Horizontal | Flat 50% 横 |
 | **努** | Vertical | Thirds: **50% → 45%**, hold **45%**, **45% → 50%**. 着筆 at the start |
 | **趯** | Hook | Hold 50% for 40%, then taper to 0 (はね) |
