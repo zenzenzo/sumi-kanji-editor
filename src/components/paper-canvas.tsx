@@ -10,7 +10,7 @@ function cssColor(name: string, fallback: string): string {
   return v || fallback;
 }
 
-export type PaperCommand = "play" | "pause" | "replay" | "step" | "finish" | null;
+export type PaperCommand = "play" | "pause" | "replay" | "rewind" | "step" | "finish" | null;
 
 type Props = {
   glyphs: GlyphData[];
@@ -132,6 +132,7 @@ export function PaperCanvas({
     if (command === "play") p.play();
     if (command === "pause") p.pause();
     if (command === "replay") p.replay();
+    if (command === "rewind") p.rewind();
     if (command === "step") p.stepStroke();
     if (command === "finish") p.finish();
   }, [command]);

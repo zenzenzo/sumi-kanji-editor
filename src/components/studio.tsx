@@ -333,7 +333,7 @@ export function Studio() {
             >
               {snap?.playing ? <Pause /> : <Play />}
             </Button>
-            <Button type="button" size="icon-sm" variant="outline" aria-label="Replay" onClick={() => fire("replay")}>
+            <Button type="button" size="icon-sm" variant="outline" aria-label="Reset" onClick={() => fire("rewind")}>
               <RotateCcw />
             </Button>
             <Button
@@ -533,17 +533,30 @@ function SliderRow({
   display: string;
   onChange: (n: number) => void;
 }) {
+  const [live, setLive] = useState<number | null>(null);
+  const shown = live ?? value;
+  const text =
+    live == null
+      ? display
+      : step >= 1
+        ? String(Math.round(shown))
+        : shown.toFixed(2);
   return (
     <label className="mt-4 block text-xs tracking-wide text-ink-soft uppercase">
       {label}
-      <span className="ml-2 font-mono tabular-nums text-ink">{display}</span>
+      <span className="ml-2 font-mono tabular-nums text-ink">{text}</span>
       <Slider
         className="mt-2"
         min={min}
         max={max}
         step={step}
-        value={[value]}
-        onValueChange={(v) => onChange(v[0] ?? value)}
+        value={[shown]}
+        onValueChange={(v) => setLive(v[0] ?? shown)}
+        onValueCommit={(v) => {
+          const n = v[0] ?? shown;
+          setLive(null);
+          onChange(n);
+        }}
       />
     </label>
   );

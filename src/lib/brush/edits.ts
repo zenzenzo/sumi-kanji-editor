@@ -345,79 +345,79 @@ function evalMode(
   mode: StrokeMode,
   local: number,
   startP: number,
-  bodyLevel: number,
+  _bodyLevel: number,
   _globalT: number,
   _kind: StrokeKind,
   complete = true,
 ): number {
   const u = clamp(local, 0, 1);
+  const p0 = clamp(startP, 0, 1);
   switch (mode) {
     case "horizontal":
     case "pressure":
     case "auto":
-      return bodyLevel;
+      return p0;
     case "vertical": {
-      const hi = bodyLevel;
-      const lo = bodyLevel * 0.9;
+      const hi = p0;
+      const lo = p0 * 0.9;
       if (u < 1 / 3) return lerp(hi, lo, u / (1 / 3));
       if (u < 2 / 3) return lo;
       return lerp(lo, hi, (u - 2 / 3) / (1 / 3));
     }
     case "soku":
-      return lerp(0.3, 0.8, u);
+      return lerp(p0, 0.8, u);
     case "ryaku":
-      return Math.max(0, startP * Math.pow(1 - u, 0.88));
+      return Math.max(0, p0 * Math.pow(1 - u, 0.88));
     case "peck":
-      return Math.max(0, startP * Math.pow(1 - u, 1.35));
+      return Math.max(0, p0 * Math.pow(1 - u, 1.35));
     case "saku": {
-      if (!complete) return Math.max(0, startP * lerp(0.22, 1, u));
-      const peak = u < 0.45 ? lerp(0.22, 1, u / 0.45) : Math.pow(1 - (u - 0.45) / 0.55, 1.4);
-      return Math.max(0, startP * peak);
+      const peak = Math.max(p0, BODY_PRESSURE);
+      if (!complete) return lerp(p0, peak, u);
+      if (u < 0.45) return lerp(p0, peak, u / 0.45);
+      return Math.max(0, peak * Math.pow(1 - (u - 0.45) / 0.55, 1.4));
     }
     case "sweep": {
-      const a = Math.min(Math.max(startP, 0.08), 0.14);
-      if (!complete) {
-        const s = u;
-        return lerp(a, 1, s * s);
-      }
+      if (!complete) return lerp(p0, 1, u * u);
       if (u <= 0.75) {
         const s = u / 0.75;
-        return lerp(a, 1, s * s);
+        return lerp(p0, 1, s * s);
       }
       const s = (u - 0.75) / 0.25;
       return Math.max(0, Math.pow(1 - s, 1.65));
     }
     case "hane":
-      return u < 0.4 ? startP : Math.max(0, startP * Math.pow(1 - (u - 0.4) / 0.6, 1.25));
+      return u < 0.4 ? p0 : Math.max(0, p0 * Math.pow(1 - (u - 0.4) / 0.6, 1.25));
     case "lift": {
       const floor = 0.1;
-      if (u < 0.93) return startP * lerp(1, floor, u / 0.93);
-      return Math.max(0, startP * floor * Math.pow(1 - (u - 0.93) / 0.07, 1.6));
+      if (u < 0.93) return p0 * lerp(1, floor, u / 0.93);
+      return Math.max(0, p0 * floor * Math.pow(1 - (u - 0.93) / 0.07, 1.6));
     }
     case "stop":
-      return Math.max(startP, 0.92);
+      return Math.max(p0, 0.92);
     default:
-      return bodyLevel;
+      return p0;
   }
 }
 
 function startPressure(mode: StrokeMode): number {
   if (mode === "sweep") return 0.1;
   if (mode === "peck") return 1;
+  if (mode === "soku") return 0.3;
+  if (mode === "saku") return 0.11;
   if (mode === "ryaku") return clamp(BODY_PRESSURE * RYAKU_START_BOOST, 0, 1);
-  if (mode === "saku") return BODY_PRESSURE;
+  if (mode === "stop") return 0.92;
   return BODY_PRESSURE;
 }
 
 /**
- * First type pin names the whole stroke from t=0.
- * Later type / finish pins switch at their t.
- * Pressure pins never split the envelope — they only multiply afterwards.
+ * First type pin names the whole stroke from t=0 and uses that type's default start.
+ * Later type / finish pins take over at their t: the previous span's ending pressure
+ * is the next span's start (handoff). Pressure pins only multiply afterwards.
  */
 export function pressureAlongStroke(t: number, pins: PathPin[], _hint: StartHint): number {
   const types = [...pins].filter((p) => isSwitchPin(p.kind)).sort((a, b) => a.t - b.t);
   let mode: StrokeMode = "auto";
-  let bodyLevel = BODY_PRESSURE;
+  const bodyLevel = BODY_PRESSURE;
   let startP = BODY_PRESSURE;
   let t0 = 0;
   let named = false;
@@ -433,20 +433,10 @@ export function pressureAlongStroke(t: number, pins: PathPin[], _hint: StartHint
       const local = (t - t0) / Math.max(1e-4, pin.t - t0);
       return evalMode(mode, local, startP, bodyLevel, t, _hint.kind, false);
     }
-    startP = evalMode(mode, 1, startP, bodyLevel, pin.t, _hint.kind, false);
+    startP = clamp(evalMode(mode, 1, startP, bodyLevel, pin.t, _hint.kind, false), 0, 1);
     t0 = pin.t;
     mode = pin.kind as StrokeMode;
-    if (pin.kind === "horizontal" || pin.kind === "vertical" || pin.kind === "soku") {
-      startP = BODY_PRESSURE;
-    } else if (pin.kind === "peck") {
-      startP = 1;
-    } else if (pin.kind === "ryaku") {
-      startP = clamp(Math.max(startP, BODY_PRESSURE) * RYAKU_START_BOOST, 0, 1);
-    } else if (pin.kind === "saku") {
-      startP = Math.max(startP, BODY_PRESSURE);
-    } else if (pin.kind === "stop") {
-      startP = Math.max(startP, 0.92);
-    }
+    if (pin.kind === "stop") startP = Math.max(startP, 0.92);
   }
   const local = (t - t0) / Math.max(1e-4, 1 - t0);
   return evalMode(mode, local, startP, bodyLevel, t, _hint.kind, true);
