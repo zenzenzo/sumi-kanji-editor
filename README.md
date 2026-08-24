@@ -50,7 +50,11 @@ Default body is **50%** of the fully-pressed tuft (the Size slider). 2× pressur
 | **啄** | Short left | **100% → 0**, `(1−t)^1.35`. 着筆 at the start, landing at full pressure |
 | **磔** | Splay right | 10% → 100% over the first 75%, then taper to 0 on the path |
 
-**永 suggested layout**
+
+The "suggested" feature will place pins on a character. However, only 永 has the correct stroke type pins by default. Choose a Kanji and try applying stroke type pins to paths to achieve the desired result. If the stroke type nodes fail to achieve the desired result, the pressure nodes can be used for more granular adjustments. A singular pressure node will apply to a whole stroke, but multiple pressure nodes can be chained, and the transitions are smoothed.
+
+
+**example of a suggested layout for 永**
 
 | Stroke | Pins |
 | --- | --- |
