@@ -45,14 +45,17 @@ function framesEqual(a: Uint8ClampedArray, b: Uint8ClampedArray): boolean {
 }
 
 export async function renderCalligraphyGif(opts: GifExportOptions): Promise<Blob> {
-  const size = opts.size ?? 360;
-  const fps = opts.fps ?? 10;
-  const maxColors = opts.maxColors ?? 32;
-  const frameMs = 1000 / fps;
-  // gifenc's `delay` option is milliseconds (it converts to the GIF's native
-  // centisecond unit internally) — passing a pre-converted centisecond value
-  // here, as the previous version did, made every frame play back ~10x too
-  // fast before any player-side clamping.
+  // 24 fps ≈ twice the old 12 fps capture, so the brush motion reads as a
+  // stroke instead of a slideshow. gifenc's `delay` is milliseconds (it
+  // divides by 10 into GIF centiseconds). The first exporter passed already-
+  // converted centiseconds, so loops ran ~10× fast. The Claude pass fixed
+  // units but dropped to 10 fps. Wall-clock delay is `delayMs`; animation
+  // time advanced per frame is that times the editor speed slider, matching
+  // in-app playback duration.
+  const size = opts.size ?? 480;
+  const fps = opts.fps ?? 24;
+  const maxColors = opts.maxColors ?? 64;
+  const delayMs = Math.max(20, Math.round(1000 / fps / 10) * 10);
   const holdMs = 1200;
 
   const wrap = document.createElement("div");
@@ -83,9 +86,9 @@ export async function renderCalligraphyGif(opts: GifExportOptions): Promise<Blob
   // This both shrinks the file and keeps on-screen timing accurate to the
   // in-app playback, since no visual time is dropped — only redundant
   // encoded frames are.
-  const advanceMs = frameMs * Math.max(0.25, opts.speed);
+  const advanceMs = delayMs * Math.max(0.25, opts.speed);
   const frames: CapturedFrame[] = [];
-  const cap = 360;
+  const cap = 720;
   let n = 0;
   let going = true;
   while (going && n < cap) {
@@ -93,9 +96,9 @@ export async function renderCalligraphyGif(opts: GifExportOptions): Promise<Blob
     const pixels = player.readPixels();
     const prev = frames[frames.length - 1];
     if (prev && framesEqual(prev.data, pixels.data)) {
-      prev.delayMs += advanceMs;
+      prev.delayMs += delayMs;
     } else {
-      frames.push({ data: pixels.data, delayMs: advanceMs });
+      frames.push({ data: pixels.data, delayMs });
     }
     n += 1;
     if (n % 6 === 0) {
