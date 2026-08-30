@@ -4,7 +4,7 @@ A kanji calligraphy editor. Type a character, edit the stroke-order path, pin ho
 
 Use it, fork it, strip it for parts. The whole project is yours to repurpose.
 
-A live version is at [sumi.grok.me](https://sumi.grok.me).
+A live version is at [sumi-kanji-editor.grok.me](sumi-kanji-editor.grok.me).
 
 ## Why it exists
 
