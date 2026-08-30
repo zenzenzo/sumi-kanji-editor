@@ -564,6 +564,7 @@ export function simulateStrokeRange(
   if (toIdx < fromIdx || stroke.samples.length === 0) return;
   const start = Math.max(0, fromIdx);
   const end = Math.min(stroke.samples.length - 1, toIdx);
+  wet.markLiveDirty();
   for (let i = start; i <= end; i++) {
     const sample = stroke.samples[i];
     if (sample.pressure < 0.02) break;

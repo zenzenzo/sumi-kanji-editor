@@ -76,6 +76,16 @@ export class BrushPlayer {
   private dpr = 1;
   private fixedSize: { w: number; h: number; dpr?: number } | null = null;
 
+  // Cached paper texture + vignette so paintPaper() doesn't rebuild a
+  // radial gradient and redraw dozens of tiled drawImage calls every frame.
+  private paperLayer: HTMLCanvasElement | null = null;
+  private paperLayerW = 0;
+  private paperLayerH = 0;
+  private paperLayerDpr = 0;
+  private vignette: CanvasGradient | null = null;
+  private vignetteW = 0;
+  private vignetteH = 0;
+
   private wet = new WetPaper();
   private sim: BristleSim;
   private simStepIndex = 0;
@@ -496,27 +506,55 @@ export class BrushPlayer {
     ctx.fillRect(0, 0, w, h);
     const img = this.paper;
     if (img && img.complete && img.naturalWidth > 0) {
-      ctx.save();
-      ctx.globalAlpha = 0.55;
-      const tile = 420;
-      for (let y = 0; y < h; y += tile) {
-        for (let x = 0; x < w; x += tile) {
-          ctx.drawImage(img, x, y, tile, tile);
-        }
+      if (
+        !this.paperLayer ||
+        this.paperLayerW !== w ||
+        this.paperLayerH !== h ||
+        this.paperLayerDpr !== this.dpr
+      ) {
+        this.buildPaperLayer(img, w, h);
       }
-      ctx.restore();
+      if (this.paperLayer) ctx.drawImage(this.paperLayer, 0, 0, w, h);
     }
-    const vignette = ctx.createRadialGradient(
-      w / 2,
-      h / 2,
-      Math.min(w, h) * 0.2,
-      w / 2,
-      h / 2,
-      Math.max(w, h) * 0.72,
-    );
-    vignette.addColorStop(0, "rgba(28, 24, 20, 0)");
-    vignette.addColorStop(1, "rgba(28, 24, 20, 0.08)");
-    ctx.fillStyle = vignette;
+    if (!this.vignette || this.vignetteW !== w || this.vignetteH !== h) {
+      const vignette = ctx.createRadialGradient(
+        w / 2,
+        h / 2,
+        Math.min(w, h) * 0.2,
+        w / 2,
+        h / 2,
+        Math.max(w, h) * 0.72,
+      );
+      vignette.addColorStop(0, "rgba(28, 24, 20, 0)");
+      vignette.addColorStop(1, "rgba(28, 24, 20, 0.08)");
+      this.vignette = vignette;
+      this.vignetteW = w;
+      this.vignetteH = h;
+    }
+    ctx.fillStyle = this.vignette;
     ctx.fillRect(0, 0, w, h);
+  }
+
+  /** Pre-render the tiled washi texture once per size/dpr instead of per frame. */
+  private buildPaperLayer(img: HTMLImageElement, w: number, h: number) {
+    const layer = this.paperLayer ?? document.createElement("canvas");
+    const dpr = this.dpr;
+    layer.width = Math.max(1, Math.round(w * dpr));
+    layer.height = Math.max(1, Math.round(h * dpr));
+    const lctx = layer.getContext("2d");
+    if (!lctx) return;
+    lctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    lctx.clearRect(0, 0, w, h);
+    lctx.globalAlpha = 0.55;
+    const tile = 420;
+    for (let y = 0; y < h; y += tile) {
+      for (let x = 0; x < w; x += tile) {
+        lctx.drawImage(img, x, y, tile, tile);
+      }
+    }
+    this.paperLayer = layer;
+    this.paperLayerW = w;
+    this.paperLayerH = h;
+    this.paperLayerDpr = dpr;
   }
 }

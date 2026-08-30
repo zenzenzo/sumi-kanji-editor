@@ -15,6 +15,15 @@ export class WetPaper {
   width = 0;
   height = 0;
   dpr = 1;
+  /**
+   * True once anything has been stamped onto `live` since the last commit/clear.
+   * `composite()` is called every animation frame regardless of whether a
+   * stroke is actually being drawn right now (paused steps, replays, etc).
+   * The dilate + blur pass in `blitFused` is by far the most expensive part
+   * of a frame, so we skip it whenever there is nothing new to blend —
+   * `live` is empty and `dry` alone is the correct picture.
+   */
+  private liveDirty = false;
 
   constructor() {
     this.dry = document.createElement("canvas");
@@ -25,6 +34,11 @@ export class WetPaper {
 
   get stampCtx() {
     return this.liveCtx;
+  }
+
+  /** Call after drawing anything onto `stampCtx` (the live layer). */
+  markLiveDirty() {
+    this.liveDirty = true;
   }
 
   resize(cssW: number, cssH: number, dpr: number) {
@@ -55,12 +69,14 @@ export class WetPaper {
     this.liveCtx?.clearRect(0, 0, w, h);
     this.scratchCtx?.clearRect(0, 0, w, h);
     this.maskCtx?.clearRect(0, 0, w, h);
+    this.liveDirty = false;
   }
 
   composite(dest: CanvasRenderingContext2D, wetness: number) {
     const w = this.width;
     const h = this.height;
     dest.drawImage(this.dry, 0, 0, w, h);
+    if (!this.liveDirty) return;
     this.blitFused(dest, wetness, false);
   }
 
@@ -71,6 +87,7 @@ export class WetPaper {
     this.liveCtx?.clearRect(0, 0, this.width, this.height);
     this.scratchCtx?.clearRect(0, 0, this.width, this.height);
     this.maskCtx?.clearRect(0, 0, this.width, this.height);
+    this.liveDirty = false;
   }
 
   /**

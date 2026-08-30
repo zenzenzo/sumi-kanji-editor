@@ -4,7 +4,7 @@ declare module "gifenc" {
       index: Uint8Array,
       width: number,
       height: number,
-      opts?: { palette?: number[][]; delay?: number; repeat?: number },
+      opts?: { palette?: number[][]; delay?: number; repeat?: number; colorDepth?: number },
     ): void;
     finish(): void;
     bytes(): Uint8Array;
@@ -23,7 +23,7 @@ declare module "gifenc/dist/gifenc.esm.js" {
       index: Uint8Array,
       width: number,
       height: number,
-      opts?: { palette?: number[][]; delay?: number; repeat?: number },
+      opts?: { palette?: number[][]; delay?: number; repeat?: number; colorDepth?: number },
     ): void;
     finish(): void;
     bytes(): Uint8Array;

@@ -172,6 +172,17 @@ export function PathEditor({ glyphs, book, tool, onCommit }: Props) {
   draftRef.current = draft;
   const drawing = useRef<DrawState | null>(null);
   const [cursor, setCursor] = useState<{ x: number; y: number } | null>(null);
+  // Raw pointermove can fire far faster than the display refresh rate (some
+  // pens/trackpads report well past 60Hz). Coalesce to at most one draft
+  // update — and one re-render of the whole path SVG — per animation frame.
+  const pendingPoint = useRef<{ x: number; y: number } | null>(null);
+  const moveRaf = useRef<number | null>(null);
+
+  useEffect(() => {
+    return () => {
+      if (moveRaf.current != null) cancelAnimationFrame(moveRaf.current);
+    };
+  }, []);
 
   useEffect(() => {
     if (drag.current) return;
@@ -222,14 +233,25 @@ export function PathEditor({ glyphs, book, tool, onCommit }: Props) {
     svgRef.current?.setPointerCapture(e.pointerId);
   }
 
+  /**
+   * Applies `fn` to a single stroke. This runs on every pointermove while
+   * dragging, so it only clones the touched stroke (points + pins) rather
+   * than every stroke of the character — the other strokes' objects keep
+   * their identity, they're just carried over by reference.
+   */
   function updateStroke(char: string, si: number, fn: (s: GlyphEdit["strokes"][number]) => void) {
     setDraft((prev) => {
       const base = prev[char];
-      if (!base) return prev;
-      const next = cloneEdit(base);
-      const stroke = next.strokes[si];
-      if (!stroke) return prev;
-      fn(stroke);
+      const baseStroke = base?.strokes[si];
+      if (!base || !baseStroke) return prev;
+      const nextStroke: GlyphEdit["strokes"][number] = {
+        points: baseStroke.points.map((p) => [p[0], p[1]]),
+        pins: baseStroke.pins.map((p) => ({ ...p })),
+      };
+      fn(nextStroke);
+      const strokes = base.strokes.slice();
+      strokes[si] = nextStroke;
+      const next: GlyphEdit = { char: base.char, custom: base.custom, strokes };
       dirty.current = true;
       const book = { ...prev, [char]: next };
       draftRef.current = book;
@@ -335,9 +357,8 @@ export function PathEditor({ glyphs, book, tool, onCommit }: Props) {
     if (tool !== "draw" && drawing.current) finishDraw(false);
   }, [tool]);
 
-  function onPointerMove(e: React.PointerEvent) {
-    const p = svgPoint(e);
-    if (!p) return;
+  /** Applies one resolved pointer position to whatever is currently dragging/drawing. */
+  function applyPointerMove(p: { x: number; y: number }) {
     if (tool === "draw" && drawing.current && !drag.current) {
       setCursor(p);
       return;
@@ -365,10 +386,39 @@ export function PathEditor({ glyphs, book, tool, onCommit }: Props) {
     }
   }
 
+  function flushPendingMove() {
+    moveRaf.current = null;
+    const p = pendingPoint.current;
+    pendingPoint.current = null;
+    if (p) applyPointerMove(p);
+  }
+
+  function onPointerMove(e: React.PointerEvent) {
+    // Nothing to do unless we're actively dragging or mid-draw — skip the
+    // SVG point math entirely for idle hover moves.
+    if (!drag.current && !(tool === "draw" && drawing.current)) return;
+    const p = svgPoint(e);
+    if (!p) return;
+    pendingPoint.current = p;
+    if (moveRaf.current == null) {
+      moveRaf.current = requestAnimationFrame(flushPendingMove);
+    }
+  }
+
   function endDrag(e: React.PointerEvent) {
     const d = drag.current;
     if (!d) return;
     svgRef.current?.releasePointerCapture(e.pointerId);
+    // Make sure the last queued move (up to one frame's worth) isn't lost.
+    if (moveRaf.current != null) {
+      cancelAnimationFrame(moveRaf.current);
+      moveRaf.current = null;
+    }
+    if (pendingPoint.current) {
+      const p = pendingPoint.current;
+      pendingPoint.current = null;
+      applyPointerMove(p);
+    }
     drag.current = null;
     if (d.type === "pin" && !d.moved) {
       const edit = draftRef.current[d.char];
