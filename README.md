@@ -15,12 +15,12 @@ The primary purpose of Sumi is to create fully customizable animated kanji calli
 Sumi can also be useful for:
 
 - Japanese and Chinese language-learning materials
-- Children's educational materials for learning kanji and hanzi
 - Interactive stroke-order demonstrations
 - Digital calligraphy tools
 - Animated kanji illustrations
 - Websites and applications that need customizable brush-written characters
 - Creating reference material for different calligraphic styles
+- Creating custom calligraphy for logos and signage
 
 The goal is not simply to show *which* stroke comes next, but to give each stroke the physical character of brush writing: pressure changes, 起筆, 折れ, 止め, 払い, and the way the brush's bristles respond as the stroke changes direction.
 
