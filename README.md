@@ -1,131 +1,161 @@
 # 墨 Sumi
 
-A kanji calligraphy editor. Type a character, edit the stroke-order path, pin how each line should be written, and export a looping GIF of a simulated fude writing it.
+> **README translations - 日本語訳 - 中文翻译:** [日本語](README.ja.md) · [简体中文](README.zh-CN.md)
 
-Use it, fork it, strip it for parts. The whole project is yours to repurpose.
+A kanji calligraphy editor. Enter a character, edit its stroke paths, specify how each stroke should be written using pins, and export a looping GIF of a simulated brush writing the character.
 
-A live version is at [sumi-kanji-editor.grok.me](sumi-kanji-editor.grok.me).
+Use it freely, fork it, or extract whatever parts are useful to you. The project is intended to be modified and reused in other projects.
 
-## Why it exists
+**Live version:** https://sumi-kanji-editor.grok.me/
 
-The main use-case is producing **fully customizable animated GIFs** of kanji calligraphy — your path, your pins, your brush — not a stock stroke-order animation.
+## Why I made this
 
-1. Pick the character (or a short compound)
-2. Choose a brush — Kaisho, Wet, Dry, Goat — and the sliders
-3. Edit or draw the median, drop type pins so the motion matches 永字八法
-4. Hit **GIF** in the writing panel
+The primary purpose of Sumi is to create fully customizable animated kanji calligraphy. Instead of being limited to a pre-rendered stroke-order animation, you can define your own paths, brush behavior, pressure, and stroke characteristics.
 
-The file downloads as `sumi-永.gif` (or whatever you wrote). Grid, ghost outline, speed, and your path edits are all in the recording.
+Sumi can also be useful for:
 
-**永 is the template character.** Its suggested pins follow 永字八法 on the real stroke-order medians. Load 永, hit **Suggest** if you need a clean set, and treat that as the reference for every other glyph.
+- Japanese and Chinese language-learning materials
+- Children's educational materials for learning kanji and hanzi
+- Interactive stroke-order demonstrations
+- Digital calligraphy tools
+- Animated kanji illustrations
+- Websites and applications that need customizable brush-written characters
+- Creating reference material for different calligraphic styles
 
-## Path editor
+The goal is not simply to show *which* stroke comes next, but to give each stroke the physical character of brush writing: pressure changes, 起筆, 折れ, 止め, 払い, and the way the brush's bristles respond as the stroke changes direction.
 
-Turn on **Edit path**. The overlay is the stroke-order median (from [hanzi-writer-data](https://github.com/chanind/hanzi-writer-data)); the ink is a bristle simulation that follows it.
+1. Pick a character (or a short compound).
+2. Choose a brush — Kaisho, Wet, Dry, or Goat — and adjust the sliders.
+3. Edit or draw the centerlines and place type pins to define the stroke behavior.
+4. Hit the GIF button in the writing panel.
 
-| Tool | What it does |
+The result exports as `sumi-永.gif` (or whatever character you entered). The grid, ghost outline, speed, and your path edits are all captured in the animation.
+
+**永** is the template character. Its recommended pin placement is based on the centerlines of the actual stroke order and the 永字八法. Load 永 and press Suggest if you want a clean set of pins to use as a reference when editing other characters.
+
+## Path Editor
+
+Turn on **Edit path** to see the stroke centerlines (sourced from `hanzi-writer-data`) and edit them. The simulated brush follows these paths.
+
+| Tool | Behavior |
 | --- | --- |
-| **Move** | Drag vertices. Click a segment to insert a point |
-| **Draw** | Click to place nodes, double-click to place the final node. New strokes ink in the order you drew them |
-| **Delete** | Click a vertex or pin to remove it |
+| Move | Drag vertices. Click a segment to insert a point. |
+| Draw | Click to place nodes; double-click to place the final node. New strokes are inked in the order they are drawn. |
+| Delete | Click a vertex or pin to remove it. |
+| Suggest | Infers type pins from the geometry (永 has a dedicated template). Reset restores the original centerlines and pins. Clear removes all paths so you can start from a blank page; the ghost outline and paper retain the original character's frame rather than zooming to fit a short new stroke. |
 
-**Suggest** writes type pins from geometry (永 has a dedicated template). **Reset** restores the original medians and pins. **Clear** wipes every path so you can draw on a blank page — the ghost outline and the paper stay in the original character’s frame, they do not zoom to fit a short new line.
+The brush is re-simulated only when you finish dragging or finish a drawn path.
 
-The brush only resimulates when you finish a drag or finish a drawn path.
+## Type Pins — 永字八法
 
-## Type pins — 永字八法
+Strokes do not have a type by default. Their behavior is defined by pins.
 
-A stroke has **no built-in type**. Type is a pin. The first type pin names the whole stroke from the start; a later type pin takes over from that point and runs to the end (or to the next pin). Pressure is a **multiplier** on top of that envelope, never a type switch.
+The first type pin on a stroke defines its type from the beginning. If another type pin is placed later, that type takes over from that position until the next pin or the end of the stroke. Pressure acts as a multiplier on this envelope; it does not change the stroke type.
 
-Default body is **50%** of the fully-pressed tuft (the Size slider). 2× pressure reaches the reserved max.
+The default body is **50% of the brush's maximum tuft size**. At 2× pressure, it reaches the reserved maximum.
 
 | Pin | English | Envelope |
 | --- | --- | --- |
-| **側** | Dot | ~30% → 80%. A 点, not a line |
-| **勒** | Horizontal | Flat 50% 横 |
-| **努** | Vertical | Thirds: **50% → 45%**, hold **45%**, **45% → 50%**. 着筆 at the start |
-| **趯** | Hook | Hold 50% for 40%, then taper to 0 (はね) |
-| **策** | Rise | 11% → 50% by 45% of the span, then taper. No 着筆 |
-| **掠** | Sweep left | ~67% → 0 over the whole span, `(1−t)^0.88` (⅓ heavier than the pressure at the start of the span) |
-| **啄** | Short left | **100% → 0**, `(1−t)^1.35`. 着筆 at the start, landing at full pressure |
-| **磔** | Splay right | 10% → 100% over the first 75%, then taper to 0 on the path |
+| 側 | Dot | ~30% → 80%. A point, not a line. |
+| 勒 | Horizontal | Flat 50% throughout. |
+| 努 | Vertical | 50% → 45%, holds at 45%, then 45% → 50%. Includes a beginning settling action (着筆). |
+| 趯 | Hook | Hold 50% for the first 40%, then taper to 0. The hook/flick. |
+| 策 | Rise | 11% at the start → 50% at 45% of the path, then taper. No beginning settling action. |
+| 掠 | Sweep left | ~67% → 0 over the entire path, `(1−t)^0.88`. The beginning pressure is about 1/3 heavier than normal. |
+| 啄 | Short left | 100% → 0, `(1−t)^1.35`. Includes a beginning settling action and lands at maximum pressure. |
+| 磔 | Splay right | 10% → 100% over the first 75%, then tapers to 0 along the path. |
 
+**Suggest** places type pins based on the character's geometry. Currently, only **永** has a built-in set of correct stroke-type pins. For other characters, select the character and place type pins on each path to produce the behavior you want.
 
-The "suggested" feature will place pins on a character. However, only 永 has the correct stroke type pins by default. Choose a Kanji and try applying stroke type pins to paths to achieve the desired result. If the stroke type nodes fail to achieve the desired result, the pressure nodes can be used for more granular adjustments. A singular pressure node will apply to a whole stroke, but multiple pressure nodes can be chained, and the transitions are smoothed.
+If type pins alone do not produce the desired result, use pressure pins for finer control. One pressure pin can apply to the entire stroke, or multiple pressure pins can be placed in sequence with smooth interpolation between them.
 
-
-**example of a suggested layout for 永**
+### Recommended 永 Layout
 
 | Stroke | Pins |
 | --- | --- |
 | 1 | 側 |
-| 2 | 勒 near the start, 努 just after node 4, 趯 just after node 8 |
-| 3 | 策 near the start, 掠 after node 6 |
+| 2 | 勒 (near start), 努 (just after node 4), 趯 (just after node 8) |
+| 3 | 策 (near start), 掠 (after node 6) |
 | 4 | 啄 |
 | 5 | 磔 |
 
-If 策 meets 掠, rise only runs until the 掠 pin; sweep left then owns the rest of the path. It does not die at the pin.
+When 策 transitions into 掠, the 策 rise continues only until the 掠 pin. 掠 then takes over the remainder of the path rather than disappearing abruptly at the pin.
 
-**着筆** (pre-path) is a short lean-and-settle before 努, 勒, and 啄 follow the vector. The editable path does not include that motion.
+**着筆 (pre-path)** is a short "tilt and settle the brush" motion performed before 努, 勒, and 啄 begin moving along the vector path. This motion is generated by the brush engine and is not part of the editable path.
 
-## Finish and accent pins
+## Finish & Accent Pins
 
-| Pin | What it does |
+| Pin | Behavior |
 | --- | --- |
-| **圧 Pressure** | Multiplier on the type. One pin sets the whole stroke; two pins blend between them (first value holds from the start, last value holds to the end) |
-| **折 Fold** | 折れ — reserved max pressure, miter the outside of a square corner |
-| **止 Stop** | 止め — hold ≥92%, nose past the tip and double back into a teardrop |
-| **払 Lift** | 払い — from the pin, thickness closes to a point near the end of the remaining path. The tuft packs; hairs do not lift off as a comb |
+| 圧 Pressure | Multiplier on the stroke type. One pin applies to the entire stroke; two or more pins interpolate between their values. |
+| 折 Fold | Applies a brief maximum-pressure spike and miters the outside of the corner so a change of direction reads as a fold rather than a rounded curve. |
+| 止 Stop | Holds ≥92% pressure, noses slightly past the endpoint, then doubles back to form a teardrop-shaped pool of ink. |
+| 払 Lift | From the pin onward, thickness lerps down toward a point near the end of the remaining path. The bristles close together as pressure drops rather than simply lifting away like a comb. |
 
-Path color after a type pin is that type’s muted color, so chaining is visible.
+Paths after a type pin are tinted with a soft color corresponding to that type, making it easier to see where behavior changes when multiple types are used on the same stroke.
 
 ## Brush
 
-The Size slider is the **fully pressed** footprint. Pressure scales that footprint so bristles pack together on a lift, and still decides which hairs reach the paper (centre first). That is the same idea as Krita bristle *Scale* / Photoshop bristle splay.
+The **Size** slider represents the contact area of the brush when fully pressed down. Pressure scales that area, so during a lift the bristles close together and the set of bristles contacting the paper changes from the center outward.
 
-Presets: **Kaisho** (wolf-hair), **Wet**, **Dry** (flying white), **Goat** (soft, lags on turns). Size, bristle count, splay, ink, stiffness, and softness are live.
+This is conceptually similar to brush Scale in Krita or splay in Photoshop's bristle brushes.
 
-Wet gap-fill is per stroke on the live layer only — intended space between strokes stays paper.
+Presets:
 
-## Run it
+- **Kaisho** — wolf hair
+- **Wet**
+- **Dry** — 飛白
+- **Goat** — soft and slower to follow changes in direction
 
-```bash
+Size, bristle count, splay, ink load, stiffness, and softness can all be adjusted in real time.
+
+Wet gap filling is performed per stroke. It does not fill across separate strokes, so areas of paper that should remain open between strokes stay open.
+
+## Running
+
+```text
 npm install
 npm run dev
 ```
 
-Then open the URL Vite prints (default `http://localhost:8080`).
+Then open the URL provided by Vite (default `http://localhost:8080`).
 
-```bash
+```text
 npm run build      # production build
 npm run typecheck
 ```
 
-Node 22. Stack is TanStack Start, Vite, Tailwind v4. Auth and the optional favorites table use Postgres (Neon in production, PGLite locally). Sign in (Google / X) if you want a scroll of favorites. Path edits live in the browser.
+Node 22. Built with TanStack Start, Vite, and Tailwind v4.
+
+Authentication and the optional favorites table use Postgres (Neon in production, PGLite locally). Sign in with Google or X to save a list of favorite characters. Path edits are stored in the browser.
 
 ## Reuse
 
-**MIT.** Copy the repo, lift `src/lib/brush/` into another project, change the paper, throw away the UI — no permission needed.
+MIT licensed. Copy the repository, extract `src/lib/brush/` into another project, replace the paper effect, remove the UI, or otherwise modify it however you like. No permission is required.
 
-If you ship a fork, a nod in your own readme is kind but not required. Please keep the [hanzi-writer-data](https://github.com/chanind/hanzi-writer-data) attribution if you still load its stroke medians.
+If you publish a fork, mentioning this project in your README is appreciated but not required. If you use the stroke centerlines from `hanzi-writer-data`, retain its attribution.
 
-## Layout
+## Project Structure
 
+```text
+src/lib/brush/     Bristle simulation, wet-paper processing, path pins,
+                   stroke preparation, GIF export
+
+src/lib/kanji/     Character data loading and presets
+
+src/components/    Studio, paper, path editor, and toolbar
+
+src/routes/        Pages and authentication
 ```
-src/lib/brush/     bristle sim, wet-paper commit, path pins, stroke prep, GIF export
-src/lib/kanji/     glyph loading, presets
-src/components/    studio, paper, path editor + toolbar
-src/routes/        pages and auth
-```
 
-The interesting files if you are stealing the brush:
+Files of particular interest if you want to extract the brush system into another project:
 
-- [`src/lib/brush/bristles.ts`](src/lib/brush/bristles.ts) — tuft physics, pressure-scaled spread, stamps
-- [`src/lib/brush/wet.ts`](src/lib/brush/wet.ts) — per-stroke gap fill (never across strokes)
-- [`src/lib/brush/engine.ts`](src/lib/brush/engine.ts) — 着筆, 止め hook, 折れ miter, 磔 envelope
-- [`src/lib/brush/edits.ts`](src/lib/brush/edits.ts) — pins, chaining, 永 template
-- [`src/lib/brush/gif-export.ts`](src/lib/brush/gif-export.ts) — looping GIF from the same player
+- `src/lib/brush/bristles.ts` — bristle physics, pressure-dependent splay, stamping
+- `src/lib/brush/wet.ts` — per-stroke gap filling (never across strokes)
+- `src/lib/brush/engine.ts` — 着筆, stop hooks, fold miters, 磔 envelope
+- `src/lib/brush/edits.ts` — pins, sequences, and the 永 template
+- `src/lib/brush/gif-export.ts` — exports looping GIFs using the same player
 
 ## License
 
-[MIT](LICENSE) © contributors
+MIT © contributors
