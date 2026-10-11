@@ -1,3 +1,4 @@
+import { YONG_TEMPLATE } from "./yong-template";
 import type { StrokeKind } from "@/lib/kanji/types";
 import {
   classifyStroke,
@@ -5,12 +6,16 @@ import {
   cornerIndices,
   endsLeftward,
   inferBone,
+  horizontalHookIndex,
   isLeftwardSweep,
   isRightwardSweep,
   isRisingDiagonal,
   isShortLeftFlick,
   lerp,
+  simplifyStraightStroke,
+  trimShortLeftEntry,
   vertexPathT,
+  verticalHookIndex,
 } from "./geometry";
 
 export type PinKind =
@@ -51,11 +56,21 @@ export type StrokeMode =
 
 export type StrokeEdit = {
   points: number[][];
+  /** One quadratic control point per segment; null means straight. */
+  curves?: (number[] | null)[];
+  /** Brush orientation at the start, in page-relative degrees. */
+  entryAngle?: number;
+  /** Starting pressure relative to the body, fading over the first 20%. */
+  entryPressure?: number;
   pins: PathPin[];
 };
 
 export type GlyphEdit = {
   char: string;
+  /** v3 preserves intentional removal of all type pins. */
+  version?: 3;
+  /** Distinguishes explicit stroke ordering from the older accidentally reordered 永. */
+  strokeOrderVersion?: 1;
   strokes: StrokeEdit[];
   /** True after Clear — never fall back to hanzi-writer medians. */
   custom?: boolean;
@@ -68,19 +83,33 @@ export type PathTool = "move" | "delete" | "draw" | PinKind;
 export type SettleStyle = "auto" | "tome" | "harai" | "hane" | "taku";
 
 const STORAGE_KEY = "sumi:edits:v2";
+export const DEFAULT_ENTRY_ANGLE = 160;
+export const DEFAULT_ENTRY_PRESSURE = 1.9;
+export const ENTRY_PRESSURE_MIN = 0.25;
+export const ENTRY_PRESSURE_MAX = 3;
+export function normalizeEntryPressure(value?: number): number {
+  return typeof value === "number" && Number.isFinite(value)
+    ? Math.max(ENTRY_PRESSURE_MIN, Math.min(ENTRY_PRESSURE_MAX, value))
+    : DEFAULT_ENTRY_PRESSURE;
+}
+export function normalizeEntryAngle(value?: number): number {
+  return typeof value === "number" && Number.isFinite(value)
+    ? ((value % 360) + 360) % 360
+    : DEFAULT_ENTRY_ANGLE;
+}
 
 export const PIN_META: Record<PinKind, { label: string; ja: string; hint: string }> = {
   pressure: { label: "Pressure", ja: "圧", hint: "Multiplier on the stroke type — blends between two pins" },
-  soku: { label: "Dot", ja: "側", hint: "側 — 点, ~30% → 80%" },
+  soku: { label: "Dot", ja: "側", hint: "側 — 0.75× → 1.35× at 75% → 1× rounded finish" },
   horizontal: { label: "Horizontal", ja: "勒", hint: "勒 — even horizontal body" },
   vertical: { label: "Vertical", ja: "努", hint: "努 — 50% → 45% → hold 45% → 50%; 着筆 at the start" },
   hane: { label: "Hook", ja: "趯", hint: "趯 — upward hook / はね" },
-  saku: { label: "Rise", ja: "策", hint: "策 — rising diagonal 払い" },
+  saku: { label: "Rise", ja: "策", hint: "策 — horizontal start, taper to 0.25×; next type starts at its own pressure" },
   ryaku: { label: "Sweep left", ja: "掠", hint: "掠 — long left 払い, tapers the whole way" },
   peck: { label: "Short left", ja: "啄", hint: "啄 — max at the start, then a steep taper" },
   sweep: { label: "Splay right", ja: "磔", hint: "磔 — build to full over 75%, then taper on the path" },
   ore: { label: "Fold", ja: "折", hint: "折れ — press and fold a square corner" },
-  stop: { label: "Stop", ja: "止", hint: "止め — halt, pool of ink" },
+  stop: { label: "Stop", ja: "止", hint: "止め — angled horizontal finish or rounded vertical cap" },
   lift: { label: "Lift", ja: "払", hint: "払い — sweep or lift off" },
 };
 
@@ -174,24 +203,45 @@ export function normalizePin(raw: Partial<PathPin> & { kind?: string }): PathPin
 }
 
 export function editsFromMedians(char: string, medians: number[][][]): GlyphEdit {
+  if (char === "永") return structuredClone(YONG_TEMPLATE);
   return {
     char,
+    version: 3,
     custom: false,
-    strokes: medians.map((median, i) => ({
-      points: median.map((p) => [p[0], p[1]]),
-      pins: suggestPins(median, char, i),
-    })),
+    strokes: medians.map((median, i) => {
+      // Clean only imported defaults; mergeEdit preserves saved user paths.
+      const straight = verticalHookIndex(median) != null ? null : simplifyStraightStroke(median);
+      let points = straight?.points ?? median.map((p) => [p[0], p[1]]);
+      const pins = suggestPins(points, char, i);
+      // Only a whole-stroke Short left qualifies, not a horizontal/hook with
+      // a Short left transition later in the stroke.
+      if (pins.length === 1 && pins[0].kind === "peck") points = trimShortLeftEntry(points);
+      return { points, pins };
+    }),
   };
 }
 
 export function mergeEdit(base: GlyphEdit, stored?: GlyphEdit | null): GlyphEdit {
   if (!stored || stored.char !== base.char) return base;
   if (stored.custom) {
+    const strokes = [...(stored.strokes ?? [])];
+    // Repair only the known captured 永's accidental last-two-stroke swap.
+    // New explicit ordering carries a marker so it is never reversed on load.
+    if (base.char === "永" && !stored.strokeOrderVersion && strokes.length === 5
+        && strokes[3].pins?.some(p => p.id === "poiq4zjf")
+        && strokes[4].pins?.some(p => p.id === "p006r6yk")) {
+      [strokes[3], strokes[4]] = [strokes[4], strokes[3]];
+    }
     return {
       char: base.char,
+      version: 3,
       custom: true,
-      strokes: (stored.strokes ?? []).map((s) => ({
+      strokeOrderVersion: 1,
+      strokes: strokes.map((s) => ({
         points: (s.points ?? []).map((p) => [p[0], p[1]]),
+        curves: s.curves?.map((c) => c ? [c[0], c[1]] : null),
+        entryAngle: s.entryAngle == null ? undefined : normalizeEntryAngle(s.entryAngle),
+        entryPressure: s.entryPressure == null ? undefined : normalizeEntryPressure(s.entryPressure),
         pins: Array.isArray(s.pins)
           ? s.pins.map((p) => normalizePin(p)).filter((p): p is PathPin => p !== null)
           : [],
@@ -200,19 +250,48 @@ export function mergeEdit(base: GlyphEdit, stored?: GlyphEdit | null): GlyphEdit
   }
   return {
     char: base.char,
+    version: 3,
     custom: false,
-    strokes: base.strokes.map((stroke, i) => {
+    strokeOrderVersion: 1,
+    strokes: Array.from({ length: Math.max(base.strokes.length, stored.strokes.length) }, (_, i) => {
+      const stroke = base.strokes[i];
       const s = stored.strokes[i];
       if (!s) return stroke;
-      const points = s.points?.length >= 2 ? s.points.map((p) => [p[0], p[1]]) : stroke.points;
+      let points = s.points?.length >= 2 ? s.points.map((p) => [p[0], p[1]]) : (stroke?.points ?? []);
+      // Recover a saved two-node import only when both nodes exactly match the
+      // original roof body and its hook is missing. Preserve hand-edited paths.
+      const roofHook = stroke ? horizontalHookIndex(stroke.points) : null;
+      const originalNodes = points.map(p => stroke?.points.findIndex(q => q[0] === p[0] && q[1] === p[1]) ?? -1);
+      const restoreRoof = roofHook != null && points.length === 2 && !s.curves?.some(Boolean)
+        && originalNodes[0] >= 0 && originalNodes[1] > originalNodes[0] && originalNodes[1] <= roofHook;
+      if (restoreRoof && stroke) points = stroke.points.map(p => [...p]);
       const pins = Array.isArray(s.pins)
         ? s.pins.map((p) => normalizePin(p)).filter((p): p is PathPin => p !== null)
         : [];
-      const withType = pins.some((p) => isTypePin(p.kind)) ? pins : [...suggestPins(points, base.char, i), ...pins];
-      const migrated = migrateLegacyPins(points, withType);
-      return { points, pins: migrated };
+      if (restoreRoof && stroke && roofHook != null) {
+        const pts = stroke.points.map(([x, y]) => ({ x, y }));
+        const start = vertexPathT(pts, originalNodes[0]);
+        const end = vertexPathT(pts, originalNodes[1]);
+        for (const pin of pins) pin.t = start + (end - start) * pin.t;
+        if (!pins.some(p => p.kind === "hane")) pins.push({ id: newPinId(), t: vertexPathT(pts, roofHook), kind: "hane" });
+      }
+      const withType = stored.version === 3 || pins.some((p) => isTypePin(p.kind)) ? pins : [...suggestPins(points, base.char, i), ...pins];
+      const migrated = stored.version === 3 ? withType : migrateLegacyPins(points, withType);
+      return { points, curves: s.curves?.map((c) => c ? [c[0], c[1]] : null),
+        entryAngle: s.entryAngle == null ? undefined : normalizeEntryAngle(s.entryAngle),
+        entryPressure: s.entryPressure == null ? undefined : normalizeEntryPressure(s.entryPressure), pins: migrated };
     }),
   };
+}
+
+/** Move the entire stroke, including its geometry and modifiers, as one unit. */
+export function reorderStroke(edit: GlyphEdit, from: number, to: number): GlyphEdit {
+  if (!Number.isInteger(from) || !Number.isInteger(to) || from < 0 || to < 0 ||
+      from >= edit.strokes.length || to >= edit.strokes.length || from === to) return edit;
+  const strokes = [...edit.strokes];
+  const [stroke] = strokes.splice(from, 1);
+  strokes.splice(to, 0, stroke);
+  return { ...edit, version: 3, strokeOrderVersion: 1, custom: true, strokes };
 }
 
 export function loadEditBook(): EditBook {
@@ -230,7 +309,7 @@ export function loadEditBook(): EditBook {
 export function saveGlyphEdit(edit: GlyphEdit) {
   if (typeof window === "undefined") return;
   const book = loadEditBook();
-  book[edit.char] = edit;
+  book[edit.char] = { ...edit, version: 3, strokeOrderVersion: 1 };
   window.localStorage.setItem(STORAGE_KEY, JSON.stringify(book));
 }
 
@@ -246,7 +325,7 @@ export function pinPressure(pin: PathPin): number {
     case "pressure":
       return clamp(pin.pressure ?? DEFAULT_PRESSURE_MULT, PRESSURE_MULT_MIN, PRESSURE_MULT_MAX);
     case "stop":
-      return 0.95;
+      return BODY_PRESSURE;
     case "lift":
       return 0.22;
     case "ore":
@@ -288,7 +367,7 @@ export function pressureFromPins(t: number, pins: PathPin[]): number | null {
   if (last.t < 0.97) {
     keys.push({
       t: 1,
-      p: last.kind === "lift" ? 0.2 : last.kind === "stop" ? 0.92 : pinPressure(last),
+      p: last.kind === "lift" ? 0.2 : last.kind === "stop" ? BODY_PRESSURE : pinPressure(last),
     });
   }
   if (t <= keys[0].t) return keys[0].p;
@@ -351,7 +430,7 @@ function evalMode(
   complete = true,
 ): number {
   const u = clamp(local, 0, 1);
-  const p0 = clamp(startP, 0, 1);
+  const p0 = clamp(startP, 0, 2);
   switch (mode) {
     case "horizontal":
     case "pressure":
@@ -364,17 +443,20 @@ function evalMode(
       if (u < 2 / 3) return lo;
       return lerp(lo, hi, (u - 2 / 3) / (1 / 3));
     }
-    case "soku":
-      return lerp(p0, 0.8, u);
+    case "soku": {
+      const peak = _bodyLevel * 1.35;
+      return u <= 0.75
+        ? lerp(p0, peak, u / 0.75)
+        : lerp(peak, _bodyLevel, (u - 0.75) / 0.25);
+    }
     case "ryaku":
       return Math.max(0, p0 * Math.pow(1 - u, 0.88));
     case "peck":
       return Math.max(0, p0 * Math.pow(1 - u, 1.35));
     case "saku": {
-      const peak = Math.max(p0, BODY_PRESSURE);
-      if (!complete) return lerp(p0, peak, u);
-      if (u < 0.45) return lerp(p0, peak, u / 0.45);
-      return Math.max(0, peak * Math.pow(1 - (u - 0.45) / 0.55, 1.4));
+      // Preserve the horizontal-like entry before tapering the remaining span.
+      const taper = clamp((u - 0.2) / 0.8, 0, 1);
+      return lerp(p0, p0 * 0.25, taper);
     }
     case "sweep": {
       if (!complete) return lerp(p0, 1, u * u);
@@ -393,7 +475,7 @@ function evalMode(
       return Math.max(0, p0 * floor * Math.pow(1 - (u - 0.93) / 0.07, 1.6));
     }
     case "stop":
-      return Math.max(p0, 0.92);
+      return p0;
     default:
       return p0;
   }
@@ -402,11 +484,54 @@ function evalMode(
 function startPressure(mode: StrokeMode): number {
   if (mode === "sweep") return 0.1;
   if (mode === "peck") return 1;
-  if (mode === "soku") return 0.3;
-  if (mode === "saku") return 0.11;
+  if (mode === "soku") return BODY_PRESSURE * 0.75;
+  if (mode === "saku") return BODY_PRESSURE;
   if (mode === "ryaku") return clamp(BODY_PRESSURE * RYAKU_START_BOOST, 0, 1);
-  if (mode === "stop") return 0.92;
+  if (mode === "stop") return BODY_PRESSURE;
   return BODY_PRESSURE;
+}
+
+/** Build pressure quadratically over the 10% of path preceding each Hook. */
+export function hookPressureBoost(t: number, pins: PathPin[]): number {
+  let boost = 1;
+  for (const pin of pins) {
+    if (pin.kind !== "hane" || t >= pin.t || t < pin.t - 0.1) continue;
+    const u = clamp((t - (pin.t - 0.1)) / 0.1, 0, 1);
+    boost = Math.max(boost, 1 + 0.5 * u * u);
+  }
+  return boost;
+}
+
+/** The horizontal closing pressure envelope also applies before a type transition. */
+export function horizontalFinishGain(u: number): number {
+  const s = clamp(u, 0, 1);
+  return (1 + 0.9 * Math.pow(s, 4)) * (1 + 0.15 * s);
+}
+
+function closesHorizontal(mode: StrokeMode, next: PinKind): boolean {
+  return mode === "horizontal" && isTypePin(next) && next !== "horizontal" && next !== "hane";
+}
+
+/** Spans which close a horizontal, then continue on the same path in a new type. */
+export function horizontalTransitions(pins: PathPin[]): { start: number; end: number; nextEnd: number }[] {
+  const types = [...pins].filter(p => isSwitchPin(p.kind)).sort((a, b) => a.t - b.t);
+  const spans: { start: number; end: number; nextEnd: number }[] = [];
+  let mode: StrokeMode = "auto";
+  let start = 0;
+  let named = false;
+  types.forEach((pin, i) => {
+    if (!named && isTypePin(pin.kind) && pin.kind !== "hane") {
+      mode = pin.kind as StrokeMode;
+      named = true;
+      return;
+    }
+    if (closesHorizontal(mode, pin.kind) && pin.t > start) {
+      spans.push({ start, end: pin.t, nextEnd: types[i + 1]?.t ?? 1 });
+    }
+    mode = pin.kind as StrokeMode;
+    start = pin.t;
+  });
+  return spans;
 }
 
 /**
@@ -421,9 +546,13 @@ export function pressureAlongStroke(t: number, pins: PathPin[], _hint: StartHint
   let startP = BODY_PRESSURE;
   let t0 = 0;
   let named = false;
+  let closingCarry = 0;
+  const evaluate = (local: number, complete: boolean) =>
+    evalMode(mode, local, startP, bodyLevel, t, _hint.kind, complete)
+    + closingCarry * Math.pow(Math.max(0, 1 - local / 0.2), 4);
 
   for (const pin of types) {
-    if (!named && isTypePin(pin.kind)) {
+    if (!named && isTypePin(pin.kind) && pin.kind !== "hane") {
       mode = pin.kind as StrokeMode;
       startP = startPressure(mode);
       named = true;
@@ -431,15 +560,21 @@ export function pressureAlongStroke(t: number, pins: PathPin[], _hint: StartHint
     }
     if (t < pin.t) {
       const local = (t - t0) / Math.max(1e-4, pin.t - t0);
-      return evalMode(mode, local, startP, bodyLevel, t, _hint.kind, false);
+      const closing = closesHorizontal(mode, pin.kind) ? horizontalFinishGain((local - 0.8) / 0.2) : 1;
+      return evaluate(local, false) * closing * hookPressureBoost(t, pins);
     }
-    startP = clamp(evalMode(mode, 1, startP, bodyLevel, pin.t, _hint.kind, false), 0, 1);
+    const closing = closesHorizontal(mode, pin.kind) && pin.t > t0 ? horizontalFinishGain(1) : 1;
+    const handoff = clamp(evaluate(1, false) * closing * (pin.kind === "hane" && pin.t > 0 ? 1.5 : 1), 0, 2);
+    // The closing pressure belongs to the fold. Release it quickly rather than
+    // using it as the body pressure for the whole outgoing stroke.
+    const freshType = mode === "saku" && isTypePin(pin.kind);
+    startP = closing > 1 || freshType ? startPressure(pin.kind as StrokeMode) : handoff;
+    closingCarry = closing > 1 ? handoff - startP : 0;
     t0 = pin.t;
     mode = pin.kind as StrokeMode;
-    if (pin.kind === "stop") startP = Math.max(startP, 0.92);
   }
   const local = (t - t0) / Math.max(1e-4, 1 - t0);
-  return evalMode(mode, local, startP, bodyLevel, t, _hint.kind, true);
+  return evaluate(local, true) * hookPressureBoost(t, pins);
 }
 
 /** 1 = default body. First pin applies from the start; two pins blend between them. */
@@ -467,7 +602,7 @@ export function modeAlongStroke(t: number, pins: PathPin[], _inferred: StrokeMod
   let mode: StrokeMode = "auto";
   let named = false;
   for (const pin of types) {
-    if (!named && isTypePin(pin.kind)) {
+    if (!named && isTypePin(pin.kind) && pin.kind !== "hane") {
       mode = pin.kind as StrokeMode;
       named = true;
       continue;
@@ -476,6 +611,27 @@ export function modeAlongStroke(t: number, pins: PathPin[], _inferred: StrokeMod
     mode = pin.kind as StrokeMode;
   }
   return mode;
+}
+
+/** Page-relative defaults follow the initial type; explicit angles take priority. */
+export function entryAngleForStroke(stroke: Pick<StrokeEdit, "pins" | "entryAngle" | "points">): number {
+  if (typeof stroke.entryAngle === "number" && Number.isFinite(stroke.entryAngle)) {
+    return normalizeEntryAngle(stroke.entryAngle);
+  }
+  let mode: StrokeMode | null = modeAlongStroke(0, stroke.pins, "auto");
+  if (mode === "auto" || mode === "pressure") mode = inferBone(stroke.points);
+  if (mode === "vertical") return 135;
+  if (mode === "horizontal" || mode === "saku") return 110;
+  return DEFAULT_ENTRY_ANGLE;
+}
+
+/** Left sweeps start at regular pressure unless explicitly overridden. */
+export function entryPressureForStroke(stroke: Pick<StrokeEdit, "pins" | "entryPressure">): number {
+  if (typeof stroke.entryPressure === "number" && Number.isFinite(stroke.entryPressure)) {
+    return normalizeEntryPressure(stroke.entryPressure);
+  }
+  const mode = modeAlongStroke(0, stroke.pins, "auto");
+  return mode === "ryaku" || mode === "peck" ? 1 : DEFAULT_ENTRY_PRESSURE;
 }
 
 /** Even body for 90% of the stroke; tail follows 止め / 払い / はね. */
@@ -523,8 +679,9 @@ export function settleFromPins(pins: PathPin[], kind: StrokeKind): SettleStyle {
     .sort((a, b) => a.t - b.t);
   if (!ending.length) return "auto";
   const last = ending[ending.length - 1];
+  if (last.kind === "soku") return "tome";
   if (last.kind === "sweep") return "harai";
-  if (last.kind === "ryaku" || last.kind === "peck" || last.kind === "saku" || last.kind === "soku")
+  if (last.kind === "ryaku" || last.kind === "peck" || last.kind === "saku")
     return "harai";
   if (last.kind === "hane") return "hane";
   if (last.kind === "lift") return kind === "hook" ? "hane" : "harai";
@@ -543,6 +700,20 @@ export function suggestPins(points: number[][], char?: string, index?: number): 
     pressure,
   });
   if (kind === "dot") return [pin(0.25, "soku")];
+  const roofHook = horizontalHookIndex(points);
+  if (roofHook != null) {
+    const pts = points.map(([x, y]) => ({ x, y }));
+    return [pin(0.28, "horizontal"), pin(vertexPathT(pts, roofHook), "hane")];
+  }
+  const hook = verticalHookIndex(points);
+  if (hook != null) {
+    const pts = points.map(([x, y]) => ({ x, y }));
+    return [pin(0.28, "vertical"), pin(vertexPathT(pts, hook), "hane")];
+  }
+  const straight = simplifyStraightStroke(points);
+  if (straight) return straight.mode === "horizontal"
+    ? [pin(0.3, "horizontal")]
+    : [pin(0.3, "vertical"), pin(0.9, "stop")];
   if (isRisingDiagonal(points)) return [pin(0.3, "saku")];
   if (isShortLeftFlick(points)) return [pin(0.3, "peck")];
   if (isLeftwardSweep(points)) return [pin(0.3, "ryaku")];
@@ -555,7 +726,7 @@ export function suggestPins(points: number[][], char?: string, index?: number): 
     if (bone === "vertical") {
       return endsLeftward(points)
         ? [pin(0.28, "vertical"), pin(0.72, "ryaku")]
-        : [pin(0.28, "vertical"), pin(0.86, "hane")];
+        : [pin(0.28, "vertical"), pin(0.9, "stop")];
     }
     if (bone === "horizontal") return [pin(0.28, "horizontal"), pin(foldT, "ore"), pin(0.88, "hane")];
     return [pin(foldT, "ore"), pin(0.88, "hane")];
@@ -566,36 +737,13 @@ export function suggestPins(points: number[][], char?: string, index?: number): 
       ? [pin(0.3, "vertical"), pin(0.72, "ryaku")]
       : [pin(0.3, "vertical"), pin(0.9, "stop")];
   }
-  if (bone === "horizontal") return [pin(0.3, "horizontal"), pin(0.9, "stop")];
+  if (bone === "horizontal") return [pin(0.3, "horizontal")];
   return [pin(0.9, "stop")];
 }
 
-function tAfterNode(points: number[][], index: number): number {
-  const pts = points.map(([x, y]) => ({ x, y }));
-  if (pts.length < 2) return 0.5;
-  const i = Math.min(Math.max(index, 0), pts.length - 1);
-  const t = vertexPathT(pts, i);
-  if (i >= pts.length - 1) return Math.min(0.9, Math.max(0.82, t - 0.08));
-  return clamp(t + 0.012, 0, 0.98);
-}
-
-/** 永 is the template character — pins match 永字八法 on the real medians. */
-function suggestYongPins(points: number[][], si: number): PathPin[] {
-  const pin = (t: number, kind: PinKind): PathPin => ({ id: newPinId(), t: clamp(t, 0, 1), kind });
-  switch (si) {
-    case 0:
-      return [pin(0.25, "soku")];
-    case 1:
-      return [pin(0.07, "horizontal"), pin(tAfterNode(points, 4), "vertical"), pin(tAfterNode(points, 8), "hane")];
-    case 2:
-      return [pin(0.08, "saku"), pin(tAfterNode(points, 6), "ryaku")];
-    case 3:
-      return [pin(0.28, "peck")];
-    case 4:
-      return [pin(0.32, "sweep")];
-    default:
-      return [];
-  }
+/** Suggest restores the definitive template's per-stroke pin layout. */
+function suggestYongPins(_points: number[][], si: number): PathPin[] {
+  return (YONG_TEMPLATE.strokes[si]?.pins ?? []).map(pin => ({ ...pin, id: newPinId() }));
 }
 
 /** Old 努+止 on a left-ending 縦 → 努+掠 (永's third stroke). */

@@ -7,3 +7,8 @@ node_modules/
 .vercel/
 .node_modules.lock
 *.log
+
+# Local QA captures (keep only curated documentation examples)
+screenshots/*
+!screenshots/sumi-definitive-yong.jpg
+!screenshots/sumi-stroke-order.jpg

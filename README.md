@@ -1,161 +1,150 @@
 # 墨 Sumi
 
-> **README translations - 日本語訳 - 中文翻译:** [日本語](README.ja.md) · [简体中文](README.zh-CN.md)
+[日本語](README.ja.md) · [简体中文](README.zh-CN.md)
 
-A kanji calligraphy editor. Enter a character, edit its stroke paths, specify how each stroke should be written using pins, and export a looping GIF of a simulated brush writing the character.
+A kanji calligraphy editor for creating customizable animations of a simulated brush writing a character. Edit the paths, curve the segments, specify stroke types and pressure, reorder strokes, and export a looping GIF.
 
-Use it freely, fork it, or extract whatever parts are useful to you. The project is intended to be modified and reused in other projects.
-
-**Live version:** https://sumi-kanji-editor.grok.me/
+**Live version:** [sumi-kanji-editor.grok.me](https://sumi-kanji-editor.grok.me/)
 
 ## Why I made this
 
-The primary purpose of Sumi is to create fully customizable animated kanji calligraphy. Instead of being limited to a pre-rendered stroke-order animation, you can define your own paths, brush behavior, pressure, and stroke characteristics.
+The purpose of Sumi is to create fully customizable animated kanji calligraphy. Instead of relying on fixed stroke-order animations, you can define your own paths, brush behavior, pressure, and stroke characteristics.
 
-Sumi can also be useful for:
+It can be used for language-learning materials, stroke-order demonstrations, digital calligraphy tools, animated illustrations, logos, signage, and other projects that need brush-written characters. Use it freely, fork it, or extract the parts you need.
 
-- Japanese and Chinese language-learning materials
-- Interactive stroke-order demonstrations
-- Digital calligraphy tools
-- Animated kanji illustrations
-- Websites and applications that need customizable brush-written characters
-- Creating reference material for different calligraphic styles
-- Creating custom calligraphy for logos and signage
+## Run locally
 
-The goal is not simply to show *which* stroke comes next, but to give each stroke the physical character of brush writing: pressure changes, 起筆, 折れ, 止め, 払い, and the way the brush's bristles respond as the stroke changes direction.
+Use **Node.js 22** and npm:
 
-1. Pick a character (or a short compound).
-2. Choose a brush — Kaisho, Wet, Dry, or Goat — and adjust the sliders.
-3. Edit or draw the centerlines and place type pins to define the stroke behavior.
-4. Hit the GIF button in the writing panel.
-
-The result exports as `sumi-永.gif` (or whatever character you entered). The grid, ghost outline, speed, and your path edits are all captured in the animation.
-
-**永** is the template character. Its recommended pin placement is based on the centerlines of the actual stroke order and the 永字八法. Load 永 and press Suggest if you want a clean set of pins to use as a reference when editing other characters.
-
-## Path Editor
-
-Turn on **Edit path** to see the stroke centerlines (sourced from `hanzi-writer-data`) and edit them. The simulated brush follows these paths.
-
-| Tool | Behavior |
-| --- | --- |
-| Move | Drag vertices. Click a segment to insert a point. |
-| Draw | Click to place nodes; double-click to place the final node. New strokes are inked in the order they are drawn. |
-| Delete | Click a vertex or pin to remove it. |
-| Suggest | Infers type pins from the geometry (永 has a dedicated template). Reset restores the original centerlines and pins. Clear removes all paths so you can start from a blank page; the ghost outline and paper retain the original character's frame rather than zooming to fit a short new stroke. |
-
-The brush is re-simulated only when you finish dragging or finish a drawn path.
-
-## Type Pins — 永字八法
-
-Strokes do not have a type by default. Their behavior is defined by pins.
-
-The first type pin on a stroke defines its type from the beginning. If another type pin is placed later, that type takes over from that position until the next pin or the end of the stroke. Pressure acts as a multiplier on this envelope; it does not change the stroke type.
-
-The default body is **50% of the brush's maximum tuft size**. At 2× pressure, it reaches the reserved maximum.
-
-| Pin | English | Envelope |
-| --- | --- | --- |
-| 側 | Dot | ~30% → 80%. A point, not a line. |
-| 勒 | Horizontal | Flat 50% throughout. |
-| 努 | Vertical | 50% → 45%, holds at 45%, then 45% → 50%. Includes a beginning settling action (着筆). |
-| 趯 | Hook | Hold 50% for the first 40%, then taper to 0. The hook/flick. |
-| 策 | Rise | 11% at the start → 50% at 45% of the path, then taper. No beginning settling action. |
-| 掠 | Sweep left | ~67% → 0 over the entire path, `(1−t)^0.88`. The beginning pressure is about 1/3 heavier than normal. |
-| 啄 | Short left | 100% → 0, `(1−t)^1.35`. Includes a beginning settling action and lands at maximum pressure. |
-| 磔 | Splay right | 10% → 100% over the first 75%, then tapers to 0 along the path. |
-
-**Suggest** places type pins based on the character's geometry. Currently, only **永** has a built-in set of correct stroke-type pins. For other characters, select the character and place type pins on each path to produce the behavior you want.
-
-If type pins alone do not produce the desired result, use pressure pins for finer control. One pressure pin can apply to the entire stroke, or multiple pressure pins can be placed in sequence with smooth interpolation between them.
-
-### Recommended 永 Layout
-
-| Stroke | Pins |
-| --- | --- |
-| 1 | 側 |
-| 2 | 勒 (near start), 努 (just after node 4), 趯 (just after node 8) |
-| 3 | 策 (near start), 掠 (after node 6) |
-| 4 | 啄 |
-| 5 | 磔 |
-
-When 策 transitions into 掠, the 策 rise continues only until the 掠 pin. 掠 then takes over the remainder of the path rather than disappearing abruptly at the pin.
-
-**着筆 (pre-path)** is a short "tilt and settle the brush" motion performed before 努, 勒, and 啄 begin moving along the vector path. This motion is generated by the brush engine and is not part of the editable path.
-
-## Finish & Accent Pins
-
-| Pin | Behavior |
-| --- | --- |
-| 圧 Pressure | Multiplier on the stroke type. One pin applies to the entire stroke; two or more pins interpolate between their values. |
-| 折 Fold | Applies a brief maximum-pressure spike and miters the outside of the corner so a change of direction reads as a fold rather than a rounded curve. |
-| 止 Stop | Holds ≥92% pressure, noses slightly past the endpoint, then doubles back to form a teardrop-shaped pool of ink. |
-| 払 Lift | From the pin onward, thickness lerps down toward a point near the end of the remaining path. The bristles close together as pressure drops rather than simply lifting away like a comb. |
-
-Paths after a type pin are tinted with a soft color corresponding to that type, making it easier to see where behavior changes when multiple types are used on the same stroke.
-
-## Brush
-
-The **Size** slider represents the contact area of the brush when fully pressed down. Pressure scales that area, so during a lift the bristles close together and the set of bristles contacting the paper changes from the center outward.
-
-This is conceptually similar to brush Scale in Krita or splay in Photoshop's bristle brushes.
-
-Presets:
-
-- **Kaisho** — wolf hair
-- **Wet**
-- **Dry** — 飛白
-- **Goat** — soft and slower to follow changes in direction
-
-Size, bristle count, splay, ink load, stiffness, and softness can all be adjusted in real time.
-
-Wet gap filling is performed per stroke. It does not fill across separate strokes, so areas of paper that should remain open between strokes stay open.
-
-## Running
-
-```text
-npm install
+```sh
+npm ci
 npm run dev
 ```
 
-Then open the URL provided by Vite (default `http://localhost:8080`).
+Open **http://localhost:8080/**. The server uses port 8080 and fails if that port is already occupied.
 
-```text
-npm run build      # production build
+```sh
+npm test
 npm run typecheck
+npm run lint
+npm run build
 ```
 
-Node 22. Built with TanStack Start, Vite, and Tailwind v4.
+The stack is React, TypeScript, TanStack Start, Vite, Tailwind CSS v4, and Nitro. The production build targets Vercel and writes `.vercel/output`. The current `npm run preview` command does not provide a working standalone production preview for this build target; use the development server for local editing.
 
-Authentication and the optional favorites table use Postgres (Neon in production, PGLite locally). Sign in with Google or X to save a list of favorite characters. Path edits are stored in the browser.
+No database configuration is required for local editing: PGLite provides the local database fallback. Set `DATABASE_URL` for Postgres; `npm run build` runs the SQL migrations when it is configured. The hosted Google/X sign-in uses the Grok auth integration. Running the editor locally does not require signing in; hosting sign-in elsewhere requires configuring the authentication integration separately.
 
-## Reuse
+## Using the editor
 
-MIT licensed. Copy the repository, extract `src/lib/brush/` into another project, replace the paper effect, remove the UI, or otherwise modify it however you like. No permission is required.
+1. Enter a kanji or short compound.
+2. Choose Kaisho, Wet, Dry, or Goat and adjust the brush sliders.
+3. Turn on **Edit** to edit paths and place stroke-type pins.
+4. Choose **GIF** to export a looping animation.
 
-If you publish a fork, mentioning this project in your README is appreciated but not required. If you use the stroke centerlines from `hanzi-writer-data`, retain its attribution.
+The GIF uses your current paths, curves, stroke order, pins, brush settings, speed, grid, and ghost-outline settings. **Export paths** downloads the editable configuration as JSON; it is not an import or backup-restore interface.
 
-## Project Structure
+Path edits are saved in this browser's local storage and reload when you return to the character. The **Save** button in the writing panel saves a favorite character when signed in; it does not export the edited paths. Local edits are not synchronized between browsers.
 
-```text
-src/lib/brush/     Bristle simulation, wet-paper processing, path pins,
-                   stroke preparation, GIF export
+## The definitive 永
 
-src/lib/kanji/     Character data loading and presets
+永 is the project's reference character. Its built-in definition is in [`src/lib/brush/yong-template.ts`](src/lib/brush/yong-template.ts), captured from the project owner's edited paths. It preserves the exact nodes, quadratic curve controls, stroke order, and pins, including the latest dot pressure of 1.35× and the third stroke’s 1×–1.3× pressure controls.
 
-src/components/    Studio, paper, path editor, and toolbar
+Fresh loads use this template when there are no saved personal edits. **Reset** restores it. **Suggest** restores its pin layout while retaining your paths. Saved personal edits take precedence.
 
-src/routes/        Pages and authentication
-```
+| Stroke | Types |
+| --- | --- |
+| 1 | 側 Dot |
+| 2 | 勒 Horizontal → 努 Vertical → 趯 Hook |
+| 3 | 策 Rise → 掠 Sweep left |
+| 4 | 啄 Short left |
+| 5 | 磔 Splay right |
 
-Files of particular interest if you want to extract the brush system into another project:
+The curved strokes use control points rather than chains of extra nodes. Other characters start with inferred paths and pins, which users can adjust to their preferred forms.
 
-- `src/lib/brush/bristles.ts` — bristle physics, pressure-dependent splay, stamping
-- `src/lib/brush/wet.ts` — per-stroke gap filling (never across strokes)
-- `src/lib/brush/engine.ts` — 着筆, stop hooks, fold miters, 磔 envelope
-- `src/lib/brush/edits.ts` — pins, sequences, and the 永 template
-- `src/lib/brush/gif-export.ts` — exports looping GIFs using the same player
+## Path editing and stroke order
 
-## License
+| Control | Behavior |
+| --- | --- |
+| Move | Drag a node to move it. Drag between nodes to curve the segment without adding nodes. Click a segment to insert a node; splitting a curve preserves its shape. |
+| Starting node | Click the first node in Move mode to edit the starting angle and pressure. Angles are relative to the page. |
+| Earlier / Later | Select a node in Move mode, then move its entire stroke earlier or later. Curves and modifiers move with it. The new order is saved and used for playback and GIFs. |
+| Draw | Click to place nodes; double-click to finish. New strokes initially go at the end of the sequence. |
+| Delete | Remove a node or pin. |
+| Suggest | Replace the type pins with inferred suggestions; preserve paths, curves, and starting settings. |
+| Reset | Discard this browser's edits for the displayed characters and restore their built-in defaults. |
+| Clear | Remove the paths so you can draw from a blank page. |
+| Export paths | Download the displayed characters' complete editable path configurations. |
 
-MIT © contributors
+Curves are quadratic Bézier segments. They are shared by the path overlay, brush simulation, and GIF exporter. The simulation updates when an edit is committed.
+
+## Imported path cleanup
+
+The stroke database often draws brush gestures into its centerlines. Sumi supplies those gestures through stroke modifiers instead.
+
+- Straight horizontal and vertical imports of at least 90 database units can become two original body nodes. More than 60% of path length must be within 12° of the axis, with a coherent body direction. A horizontal's natural rise, typically around 5°, is retained.
+- Beginning and ending flourishes are trimmed. Small downward sideways releases on verticals are distinguished from real hooks.
+- Sharp turns, upward hooks, and substantial curves are preserved. The whole tail is inspected, including rounded corners leading into 宀 roof hooks. Roof strokes receive Horizontal and Hook pins at their actual junction.
+- Whole-stroke Short left imports can lose one or two starting nodes when a sharp entry bend occupies no more than 25% of the path. Smooth starts and substantial first legs remain intact.
+- 永 uses its definitive template rather than database cleanup. Saved edits are preserved, except for narrowly identified repairs to previously shortened roof imports and the known accidental 永 stroke-order swap.
+
+These are heuristics, not a complete calligraphy classifier. Type suggestions on other characters remain editable. The original database outlines continue to supply the ghost reference and paper framing.
+
+## Stroke types and pressure
+
+The first type pin names the stroke from its beginning. Later type pins take over at their positions. Pressure pins multiply the resulting envelope; one applies to the whole stroke, while several interpolate between their values.
+
+The normal body pressure is **0.5** in the simulation's pressure scale. In the table, body-relative multipliers describe the stroke envelope; starting-gesture multipliers separately scale the underlying initial pressure. Final simulated pressure is bounded at **2**.
+
+| Type | Pressure behavior |
+| --- | --- |
+| 側 Dot | 0.75× body pressure at the start, 1.35× at 75% of the path, then 1× at the endpoint. Finishes with a stationary rounded cap. |
+| 勒 Horizontal | Even body pressure with an automatic closing gesture. No separate Stop pin is needed. |
+| 努 Vertical | Body pressure dips to 0.9×, holds, then returns to 1×. A Stop pin gives a rounded cap; a Hook belongs at the terminal bend. |
+| 趯 Hook | The preceding 10% builds nonlinearly to 1.5× incoming pressure. The hook holds its starting pressure for its first 40%, then tapers to zero. |
+| 策 Rise | Horizontal-style start and thickness. After the first 20%, tapers to 0.25×. No horizontal closing gesture. The following type starts at its own normal pressure. |
+| 掠 Sweep left | Starts at roughly 1.33× body pressure and tapers to zero. Default starting-gesture multiplier: 1×. |
+| 啄 Short left | Starts at simulation pressure 1 and tapers steeply to zero. Default starting-gesture multiplier: 1×. |
+| 磔 Splay right | Builds from simulation pressure 0.1 to 1 over the first 75%, then tapers to zero along the path. |
+
+### Starting gestures and transitions
+
+Starting gestures stay on the edited path: pressure and brush orientation settle over the first 20%. Horizontal, Vertical, and Rise default to a **1.9× starting-pressure multiplier**. The angle menu allows **0.25×–3×** per stroke.
+
+Default page-relative angles are **135° for Vertical**, **110° for Horizontal and Rise**, and **160° for other types**. Explicit settings override these defaults. Reset defaults in the menu removes the per-stroke overrides.
+
+A horizontal closing gesture reverses the natural entry envelope and reaches about 15% more pressure. It uses the stroke's starting angle, while starting-pressure adjustments affect only the entry. At a horizontal-to-type junction, that closing gesture happens before the new type; the outgoing stroke releases the extra pressure over its first 20% instead of carrying it through its whole body. Rise hands off at the next type's own starting pressure.
+
+| Modifier | Behavior |
+| --- | --- |
+| 圧 Pressure | Multiplies the complete envelope, including its start and finish; values above 1× also affect horizontal endings. |
+| 折 Fold | Brief pressure accent with an outer-corner miter. |
+| 止 Stop | Rounded vertical cap; horizontal or diagonal endings use the direction-dependent closing envelope. |
+| 払 Lift | Pressure tapers from the pin toward a fine ending. |
+
+## Brush simulation
+
+Each simulated bristle follows a spring-damped brush contact point. Pressure changes contact, spread, and footprint. Size, bristle count, stiffness, splay, ink, and softness are adjustable.
+
+The brush footprint and low-pressure bristle correction change continuously as pressure rises, avoiding a snap during dot strokes. Rounded endings blend into the moving footprint and join the settling bristle marks. Initial ink joining blends the coarse hair marks over the first 8% of the path; later portions retain their texture. Wet gap filling is applied separately to each stroke, preserving spaces between strokes. Brush-footprint orientation is handled independently of travel direction to avoid twisting or redirecting the path.
+
+GIF export uses the same brush player and streams frames rather than retaining the entire animation in memory.
+
+## Repository and hosting notes
+
+Grok's PWA middleware, preview-host bridge, OAuth helpers, and `startup.sh` support the existing hosted version. The brush engine and local path editing are independent of those features. A standalone hosting port needs corresponding build and authentication configuration; deleting the platform files alone is not a complete port.
+
+Generated `.vercel/output` and local QA captures are ignored. Two curated screenshots remain in `screenshots/`. Historical source archives, unused multiplayer scaffolding, and generic Grok authoring guides have been removed; `AGENTS.md` contains project-specific contributor notes.
+
+## Project structure
+
+- `src/lib/brush/` — geometry, curves, stroke types, bristle simulation, wet paper, playback, GIF export, and the 永 template.
+- `src/lib/kanji/` — database loading and character metadata.
+- `src/components/` — studio, canvas, path editor, angle dial, and controls.
+- `src/routes/`, `src/lib/auth/`, `src/lib/db.ts`, `migrations/` — pages, sign-in, and optional favorites storage.
+- `scripts/editor.test.mjs` — regression tests for editing, cleanup, pressure envelopes, curves, persistence, ordering, and export.
+
+## Reuse and attribution
+
+The application code is [MIT licensed](LICENSE). Copy the repository, extract the brush engine, or adapt it to another project. Attribution to this project is appreciated but not required by its MIT license beyond the license's notice requirements.
+
+Stroke paths and outlines come from `hanzi-writer-data`, derived from Make Me a Hanzi and Arphic fonts. **That data is separately licensed under the Arphic Public License**, including the derived coordinates in the 永 template. See [`licenses/ARPHICPL.txt`](licenses/ARPHICPL.txt) and the installed package's README for its attribution. The application's MIT license does not replace that data license.

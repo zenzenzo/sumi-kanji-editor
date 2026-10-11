@@ -140,6 +140,7 @@ export class BrushPlayer {
       settings.size !== this.settings.size ||
       settings.wetness !== this.settings.wetness ||
       settings.stiffness !== this.settings.stiffness ||
+      settings.splay !== this.settings.splay ||
       settings.softness !== this.settings.softness;
     this.settings = settings;
     const cell = this.glyphs[0]?.cell;

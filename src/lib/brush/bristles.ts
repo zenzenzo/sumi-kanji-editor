@@ -1,5 +1,5 @@
 import type { BrushSettings, StrokeSample, Vec } from "@/lib/kanji/types";
-import { clamp, dist } from "./geometry";
+import { axisAngleDiff, clamp, dist } from "./geometry";
 
 type Hair = {
   u: number;
@@ -25,6 +25,7 @@ export class BristleSim {
   private settings: BrushSettings;
   private radius = 12;
   private ink: string;
+  private brushAngle: number | null = null;
 
   constructor(settings: BrushSettings, ink: string) {
     this.settings = settings;
@@ -49,6 +50,7 @@ export class BristleSim {
   }
 
   reset() {
+    this.brushAngle = null;
     for (const h of this.hairs) {
       h.planted = false;
       h.vel.x = 0;
@@ -57,6 +59,7 @@ export class BristleSim {
   }
 
   plant(sample: StrokeSample) {
+    this.brushAngle = sample.angle;
     for (const h of this.hairs) {
       const t = this.target(h, sample);
       h.tip = { ...t };
@@ -69,6 +72,37 @@ export class BristleSim {
 
   step(ctx: CanvasRenderingContext2D, sample: StrokeSample, dt: number) {
     if (sample.pressure < 0.02) return;
+    // Transport the existing tuft with its changing orientation instead of
+    // pulling each hair through the opposite side of the brush's centre.
+    const angle = this.brushAngle ?? sample.angle;
+    const turn = axisAngleDiff(angle, sample.angle);
+    if (this.brushAngle != null && Math.abs(turn) > 1e-9) {
+      let cx = 0, cy = 0, vx = 0, vy = 0, plantedCount = 0;
+      for (const hair of this.hairs) {
+        if (!hair.planted) continue;
+        plantedCount += 1;
+        cx += hair.tip.x; cy += hair.tip.y;
+        vx += hair.vel.x; vy += hair.vel.y;
+      }
+      const count = plantedCount || 1;
+      cx /= count; cy /= count; vx /= count; vy /= count;
+      const ca = Math.cos(turn);
+      const sa = Math.sin(turn);
+      for (const hair of this.hairs) {
+        if (!hair.planted) continue;
+        // Rotate only the tuft's shape and internal motion. Its lag and
+        // forward velocity must stay in world coordinates along the path.
+        const x = hair.tip.x - cx;
+        const y = hair.tip.y - cy;
+        hair.tip.x = cx + ca * x - sa * y;
+        hair.tip.y = cy + sa * x + ca * y;
+        const dx = hair.vel.x - vx;
+        const dy = hair.vel.y - vy;
+        hair.vel.x = vx + ca * dx - sa * dy;
+        hair.vel.y = vy + sa * dx + ca * dy;
+      }
+    }
+    this.brushAngle = angle + turn;
     const s = this.settings;
     const k = (14 + 48 * s.stiffness) * (1.2 - 0.4 * s.softness);
     const damp = 2 * Math.sqrt(Math.max(k, 1)) * (0.62 + 0.4 * s.softness);
@@ -85,7 +119,7 @@ export class BristleSim {
           continue;
         }
         const target = this.target(hair, sample);
-        const lift = sample.hold ? 0 : 1 - sample.pressure;
+        const lift = sample.hold ? 0 : 1 - clamp(sample.pressure, 0, 1);
         const kNow = k * (1 + (sample.hold ? 0.9 : 1.4 * lift));
         const dNow = damp * (1 + (sample.hold ? 0.5 : 1.8 * lift));
         const ax = kNow * (target.x - hair.tip.x) - dNow * hair.vel.x;
@@ -101,7 +135,7 @@ export class BristleSim {
           hair.vel.x *= 0.78;
           hair.vel.y *= 0.78;
         } else if (lift > 0.45) {
-          const snap = 0.28 * lift;
+          const snap = 0.28 * clamp((lift - 0.45) / 0.55, 0, 1);
           hair.tip.x += (target.x - hair.tip.x) * snap;
           hair.tip.y += (target.y - hair.tip.y) * snap;
           hair.vel.x *= 0.72;
@@ -133,41 +167,36 @@ export class BristleSim {
     const u = clamp(pressure, 0, 1);
     const floor = 0.06 + 0.04 * s.stiffness;
     const fan = 1 + s.splay * 0.22 * u + s.softness * 0.1 * u;
-    return (floor + (1 - floor) * u) * fan;
+    return (floor + (1 - floor) * u) * fan * Math.max(1, clamp(pressure, 0, 2));
   }
 
   private target(hair: Hair, sample: StrokeSample): Vec {
     const s = this.settings;
-    const ca = Math.cos(sample.angle);
-    const sa = Math.sin(sample.angle);
+    const ca = Math.cos(this.brushAngle ?? sample.angle);
+    const sa = Math.sin(this.brushAngle ?? sample.angle);
+    const travelAngle = sample.pathAngle ?? sample.angle;
     const scale = this.tuftScale(sample.pressure) * (sample.spread ?? 1);
-    if (sample.blot) {
-      const spread = this.radius * scale * (1.05 + s.splay * 0.2);
-      const u = hair.u * spread;
-      const v = hair.v * spread;
-      return {
-        x: sample.x + ca * u - sa * v,
-        y: sample.y + sa * u + ca * v,
-      };
-    }
-    const spread = this.radius * scale * (1 + s.splay * sample.pressure * 0.35 * hair.radial);
-    const belly = 1 + 0.16 * Math.abs(Math.sin(sample.angle)) * scale;
-    const u = hair.u * spread * 0.42;
-    const v = hair.v * spread * belly;
-    const lead =
-      sample.hold || sample.pressure < 0.45
-        ? 0
-        : this.radius * scale * 0.35 * (1 - s.stiffness * 0.65);
+    const roundness = clamp(sample.roundness ?? (sample.blot ? 1 : 0), 0, 1);
+    const spread = this.radius * scale * (1 + s.splay * clamp(sample.pressure, 0, 1) * 0.35 * hair.radial);
+    const belly = 1 + 0.16 * Math.abs(Math.sin(travelAngle)) * scale;
+    const roundSpread = this.radius * scale * (1.05 + s.splay * 0.2);
+    const u = hair.u * (spread * 0.42 * (1 - roundness) + roundSpread * roundness);
+    const v = hair.v * (spread * belly * (1 - roundness) + roundSpread * roundness);
+    // Both rising pressure and a rounded cap change the footprint gradually.
+    const lead = sample.hold && sample.roundness == null
+      ? 0
+      : this.radius * scale * 0.35 * (1 - s.stiffness * 0.65) *
+        clamp((sample.pressure - 0.3) / 0.2, 0, 1) * (1 - roundness);
     return {
-      x: sample.x + ca * (u + lead) - sa * v,
-      y: sample.y + sa * (u + lead) + ca * v,
+      x: sample.x + ca * u - sa * v + Math.cos(travelAngle) * lead,
+      y: sample.y + sa * u + ca * v + Math.sin(travelAngle) * lead,
     };
   }
 
   private contact(hair: Hair, pressure: number): number {
     if (pressure < 0.02) return 0;
     const fringe = Math.max(0, hair.radial - 0.78);
-    const drop = fringe * 3.2 * (1 - pressure);
+    const drop = fringe * 3.2 * (1 - clamp(pressure, 0, 1));
     return clamp(1 - drop, 0.15, 1);
   }
 
@@ -175,6 +204,7 @@ export class BristleSim {
     if (sample.pressure < 0.02) return;
     const s = this.settings;
     const wet = s.wetness;
+    const entryBleed = sample.entryBleed ?? 0;
     pigment.save();
     pigment.strokeStyle = this.ink;
     pigment.fillStyle = this.ink;
@@ -193,9 +223,9 @@ export class BristleSim {
       const touch = this.contact(hair, sample.pressure);
       if (touch <= 0) continue;
 
-      if (sample.pressure < 0.45) {
-        const ca = Math.cos(sample.angle);
-        const sa = Math.sin(sample.angle);
+      if (sample.pressure < 0.45 && !sample.blot) {
+        const ca = Math.cos(sample.pathAngle ?? sample.angle);
+        const sa = Math.sin(sample.pathAngle ?? sample.angle);
         const ahead = (hair.tip.x - sample.x) * ca + (hair.tip.y - sample.y) * sa;
         if (ahead > 0.6) continue;
       }
@@ -246,15 +276,23 @@ export class BristleSim {
     if (touchN > 1) {
       cx /= touchN;
       cy /= touchN;
-      if (wet >= 0.22 || scale < 0.5) {
+      if (wet >= 0.22 || scale < 0.5 || entryBleed > 0) {
         const hull = convexHull(marks.map((mk) => mk.hair.tip));
         if (hull.length >= 3) {
-          pigment.globalAlpha = 0.34 + 0.32 * wet;
+          pigment.globalAlpha = (0.34 + 0.32 * wet) * (1 - entryBleed) + entryBleed;
           pigment.beginPath();
           pigment.moveTo(hull[0].x, hull[0].y);
           for (let i = 1; i < hull.length; i++) pigment.lineTo(hull[i].x, hull[i].y);
           pigment.closePath();
           pigment.fill();
+          if (entryBleed > 0) {
+            // Join the initial coarse hair marks into one soft footprint.
+            // This fades out locally; later dry-brush texture is unaffected.
+            pigment.globalAlpha = entryBleed * 0.5;
+            pigment.lineWidth = Math.max(0.5, this.radius * 0.1 * entryBleed);
+            pigment.lineJoin = "round";
+            pigment.stroke();
+          }
         }
         for (const mk of marks) {
           pigment.globalAlpha = 0.2 + 0.22 * wet;
@@ -286,6 +324,14 @@ export class BristleSim {
     blot = false,
   ) {
     if (blot) {
+      // A settling bristle can still move. Join it to its previous mark before
+      // stamping the round cap, rather than leaving disconnected dots.
+      if (travel > 0.01) {
+        ctx.beginPath();
+        ctx.moveTo(hair.prev.x, hair.prev.y);
+        ctx.lineTo(hair.tip.x, hair.tip.y);
+        ctx.stroke();
+      }
       ctx.beginPath();
       ctx.arc(hair.tip.x, hair.tip.y, width * 0.62, 0, Math.PI * 2);
       ctx.fill();

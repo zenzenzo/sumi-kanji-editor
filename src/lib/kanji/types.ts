@@ -19,7 +19,10 @@ export type Vec = { x: number; y: number };
 export type StrokeSample = {
   x: number;
   y: number;
+  /** Orientation of the brush footprint. */
   angle: number;
+  /** Travel direction, independent of footprint orientation. */
+  pathAngle?: number;
   t: number;
   pressure: number;
   kind: StrokeKind;
@@ -29,6 +32,10 @@ export type StrokeSample = {
   blot: boolean;
   /** Extra tuft scale during 着筆. 1 = normal. */
   spread?: number;
+  /** Continuous transition from the moving footprint to a round terminal cap. */
+  roundness?: number;
+  /** Brief initial ink joining, 1 at contact and 0 after the first 8% of the path. */
+  entryBleed?: number;
 };
 
 export type BrushSettings = {

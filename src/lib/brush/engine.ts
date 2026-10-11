@@ -1,7 +1,12 @@
 import type { BrushSettings, StrokeKind, StrokeSample, Vec } from "@/lib/kanji/types";
 import { BristleSim } from "./bristles";
+import { sampleStrokePath } from "./curves";
 import {
   inferMode,
+  horizontalFinishGain,
+  horizontalTransitions,
+  entryAngleForStroke,
+  entryPressureForStroke,
   modeAlongStroke,
   oreStrength,
   pressureAlongStroke,
@@ -14,6 +19,7 @@ import {
 } from "./edits";
 import {
   angleDiff,
+  axisAngleDiff,
   classifyStroke,
   cornerIndices,
   dist,
@@ -111,10 +117,10 @@ export function prepareGlyph(
   cell: Cell,
   edit?: GlyphEdit,
 ): PreparedGlyph {
-  const sources: { points: number[][]; pins: PathPin[] }[] = [];
+  const sources: { points: number[][]; pins: PathPin[]; entryAngle?: number; entryPressure?: number }[] = [];
   if (edit?.custom) {
     for (const s of edit.strokes) {
-      if (s.points.length >= 2) sources.push({ points: s.points, pins: s.pins ?? [] });
+      if (s.points.length >= 2) sources.push({ points: sampleStrokePath(s).map((p) => p.point), pins: s.pins ?? [], entryAngle: s.entryAngle, entryPressure: s.entryPressure });
     }
   } else {
     const n = Math.max(medians.length, edit?.strokes.length ?? 0);
@@ -123,7 +129,7 @@ export function prepareGlyph(
       const points =
         edited?.points && edited.points.length >= 2 ? edited.points : (medians[si] ?? null);
       if (!points || points.length < 2) continue;
-      sources.push({ points, pins: edited?.pins ?? [] });
+      sources.push({ points: edited?.curves ? sampleStrokePath({ ...edited, points }).map((p) => p.point) : points, pins: edited?.pins ?? [], entryAngle: edited?.entryAngle, entryPressure: edited?.entryPressure });
     }
   }
   const bounds = glyphBounds(medians.length ? medians : sources.map((s) => s.points));
@@ -140,7 +146,7 @@ export function prepareGlyph(
       .map((p) => nearestVertexIndex(mapped, p.t));
     const corners = [...new Set([...autoCorners, ...pinCorners])];
     const oreTs = pins.filter((p) => p.kind === "ore").map((p) => p.t);
-    let finish: SettleStyle = settle;
+    const finish: SettleStyle = settle;
     const spacing =
       kind === "dot"
         ? Math.max(0.35, Math.min(cell.w, cell.h) / 360)
@@ -160,7 +166,7 @@ export function prepareGlyph(
       const angle = Math.atan2(next.y - prev.y, next.x - prev.x);
       const along = pressureAlongStroke(t, pins, { kind, inferred });
       const pressure = lerp(
-        clamp01(along * pressureMultiplier(t, pins)),
+        Math.max(0, Math.min(2, along)),
         1,
         oreStrength(t, oreTs),
       );
@@ -176,17 +182,26 @@ export function prepareGlyph(
       });
     }
     stabilizeAngles(samples);
+    for (const sample of samples) sample.pathAngle = sample.angle;
     insertOreMiters(samples, oreTs, tuftRadius(cell, 1), kind);
     const startMode = modeAlongStroke(0, pins, inferred);
     const bone = inferBone(median);
     let entryMode: StrokeMode | null = null;
-    if (startMode === "vertical" || startMode === "horizontal" || startMode === "peck") {
+    if (startMode === "vertical" || startMode === "horizontal" || startMode === "saku" || startMode === "peck") {
       entryMode = startMode;
     } else if (startMode === "auto" || startMode === "pressure") {
       entryMode = bone;
     }
-    if (entryMode) prependEntry(samples, entryMode, tuftRadius(cell, 1), pressureMultiplier(0, pins));
-    appendSettle(samples, kind, finish, tuftRadius(cell, 1));
+    applyEntryEnvelope(samples, !!entryMode || src.entryPressure != null, entryAngleForStroke(src), entryPressureForStroke(src));
+    applyTransitionAngles(samples, pins, entryAngleForStroke(src));
+    const dotEnding = modeAlongStroke(1, pins, inferred) === "soku";
+    if (finish === "tome" && !dotEnding) applyStopEnvelope(samples, entryAngleForStroke(src));
+    // Cap the natural envelope before applying the user's multiplier. Otherwise
+    // an already full-pressure ending cannot respond to pressure pins above 1×.
+    for (const sample of samples) {
+      sample.pressure = Math.max(0, Math.min(2, sample.pressure * pressureMultiplier(sample.t, pins)));
+    }
+    appendSettle(samples, kind, finish, tuftRadius(cell, 1), dotEnding);
     const unitLen = pathLength(median.map(([x, y]) => ({ x, y })));
     const duration =
       (kind === "dot"
@@ -196,15 +211,7 @@ export function prepareGlyph(
           : finish === "tome" || (finish === "auto" && kind === "stop")
             ? 420
             : 300) +
-      unitLen * 0.9 +
-      (startMode === "vertical" ||
-      startMode === "horizontal" ||
-      startMode === "peck" ||
-      entryMode === "vertical" ||
-      entryMode === "horizontal" ||
-      entryMode === "peck"
-        ? 160
-        : 0);
+      unitLen * 0.9;
     return {
       samples,
       kind,
@@ -308,64 +315,55 @@ function insertOreMiters(
   }
 }
 
-/**
- * 着筆: lean the tuft onto P₀ before the editable path advances.
- * entryProgress 0→1, pathProgress stays 0. Then normal samples begin.
- */
-function prependEntry(
-  samples: StrokeSample[],
-  mode: StrokeMode,
-  radius: number,
-  mult: number,
-) {
-  if (samples.length < 2) return;
-  const spec =
-    mode === "peck"
-      ? { p0: 0.38, p1: 1, s0: 0.62, s1: 1.15, dist: 1.38, along: 0.48, leanT: 0.5, leanN: -0.72, n: 12 }
-      : mode === "vertical"
-        ? { p0: 0.38, p1: 0.82, s0: 0.62, s1: 1.15, dist: 1.38, along: 0.48, leanT: 0.5, leanN: -0.72, n: 12 }
-        : mode === "horizontal"
-          ? { p0: 0.36, p1: 0.78, s0: 0.65, s1: 1.12, dist: 0.95, along: 0.32, leanT: 0.55, leanN: 0.65, n: 11 }
-          : null;
-  if (!spec) return;
-
-  const first = samples[0];
-  const tx = Math.cos(first.angle);
-  const ty = Math.sin(first.angle);
-  const nx = -ty;
-  const ny = tx;
-  let lx = spec.leanT * tx + spec.leanN * nx;
-  let ly = spec.leanT * ty + spec.leanN * ny;
-  const llen = Math.hypot(lx, ly) || 1;
-  lx /= llen;
-  ly /= llen;
-  const angle0 = Math.atan2(ly, lx);
-  const angle1 = first.angle;
-  const D = Math.max(4, radius * spec.dist);
-  const along = Math.max(2, radius * spec.along);
-  const entryFrac = 0.18;
-  const n = spec.n;
-  const ease = (s: number) => 1 - (1 - s) * (1 - s) * (1 - s);
-
-  for (const s of samples) s.t = entryFrac + s.t * (1 - entryFrac);
-
-  const extra: StrokeSample[] = [];
-  for (let i = 0; i <= n; i++) {
-    const s = i / n;
-    const e = ease(s);
-    extra.push({
-      x: first.x - lx * D * (1 - e) + tx * along * e,
-      y: first.y - ly * D * (1 - e) + ty * along * e,
-      angle: angle0 + (angle1 - angle0) * e,
-      t: entryFrac * s,
-      pressure: clamp01((spec.p0 + (spec.p1 - spec.p0) * e) * mult),
-      kind: first.kind,
-      hold: false,
-      blot: false,
-      spread: spec.s0 + (spec.s1 - spec.s0) * e,
-    });
+/** Entry stays on the path: pressure and brush heading settle over its first 20%. */
+function applyEntryEnvelope(samples: StrokeSample[], press: boolean, degrees: number, peak: number) {
+  const entryAngle = degrees * Math.PI / 180;
+  for (const sample of samples) {
+    sample.entryBleed = Math.pow(Math.max(0, 1 - sample.t / 0.08), 2);
+    if (sample.t >= 0.2) continue;
+    const u = Math.max(0, sample.t / 0.2);
+    const release = Math.pow(1 - u, 4);
+    if (press) sample.pressure = Math.max(0, Math.min(2, sample.pressure * (1 + (peak - 1) * release)));
+    const ease = 1 - Math.pow(1 - u, 3);
+    sample.angle = entryAngle + axisAngleDiff(entryAngle, sample.angle) * ease;
   }
-  samples.unshift(...extra);
+}
+
+/** Close the horizontal before the junction, then settle onto the outgoing path. */
+function applyTransitionAngles(samples: StrokeSample[], pins: PathPin[], degrees: number) {
+  const gesture = degrees * Math.PI / 180;
+  for (const span of horizontalTransitions(pins)) {
+    const closingStart = span.start + (span.end - span.start) * 0.8;
+    const outgoingEnd = span.end + (span.nextEnd - span.end) * 0.2;
+    for (const sample of samples) {
+      if (sample.t < closingStart || sample.t > outgoingEnd) continue;
+      if (sample.t < span.end) {
+        const u = clamp01((sample.t - closingStart) / (span.end - closingStart));
+        sample.angle += axisAngleDiff(sample.angle, gesture) * Math.pow(u, 3);
+      } else if (outgoingEnd > span.end) {
+        const u = clamp01((sample.t - span.end) / (outgoingEnd - span.end));
+        const ease = 1 - Math.pow(1 - u, 3);
+        sample.angle = gesture + axisAngleDiff(gesture, sample.angle) * ease;
+      }
+    }
+  }
+}
+
+/** Horizontal 止め reverses the entry envelope over the final 20% of the path. */
+function applyStopEnvelope(samples: StrokeSample[], degrees: number) {
+  const last = samples[samples.length - 1];
+  if (!last) return;
+  const weight = Math.max(0, Math.min(1, (Math.abs(Math.cos(last.angle)) - 0.5) / 0.35));
+  const endAngle = degrees * Math.PI / 180;
+  for (const sample of samples) {
+    if (sample.t < 0.8) continue;
+    const u = clamp01((sample.t - 0.8) / 0.2);
+    // Reverse the fast-release entry into a slow-then-fast buildup, with a
+    // gain that reaches +15% at the endpoint and joins the body continuously.
+    const reverse = horizontalFinishGain(u);
+    sample.pressure = Math.max(0, Math.min(2, sample.pressure * (1 + weight * (reverse - 1))));
+    sample.angle += axisAngleDiff(sample.angle, endAngle) * Math.pow(u, 3) * weight;
+  }
 }
 
 /** 磔: keep moving off the tip while pressure collapses — no parked blot. */
@@ -394,21 +392,22 @@ function appendTakuPress(samples: StrokeSample[], kind: StrokeKind, radius: numb
 }
 
 /**
- * Finish the stroke. 止め overshoots a hair, then retraces the path
- * so the turn sits inside the ink instead of flicking off to the side.
+ * Finish the stroke. 止め chooses an angled close or rounded cap
+ * from the terminal heading while retaining the incoming pressure.
  */
 function appendSettle(
   samples: StrokeSample[],
   kind: StrokeKind,
   settle: SettleStyle,
   radius: number,
+  roundEnding = false,
 ) {
   if (samples.length === 0) return;
   const style = settle === "auto" ? "none" : settle;
   if (style === "none") return;
 
   if (style === "tome") {
-    appendTomeHook(samples, kind, radius);
+    appendTome(samples, kind, radius, roundEnding);
     return;
   }
 
@@ -434,6 +433,7 @@ function appendSettle(
       x: last.x,
       y: last.y,
       angle: last.angle,
+      pathAngle: last.pathAngle ?? last.angle,
       t: pathFrac + u * (1 - pathFrac),
       pressure: Math.min(1, Math.max(0, pressure)),
       kind,
@@ -443,85 +443,36 @@ function appendSettle(
   }
 }
 
-/** Reverse back over the stroke so the turn is buried in the ink. */
-function appendTomeHook(samples: StrokeSample[], kind: StrokeKind, radius: number) {
+/** 止め follows the terminal direction: angled 横 finish or rounded 縦 cap. */
+function appendTome(samples: StrokeSample[], kind: StrokeKind, _radius: number, forceRound = false) {
   const last = samples[samples.length - 1];
-  const pathFrac = 0.72;
-  const a = last.angle;
-  const tx = Math.cos(a);
-  const ty = Math.sin(a);
-  const nose = Math.max(2.2, radius * 0.4);
-  const backDist = Math.max(10, radius * 1.7);
-
-  const reverse: Vec[] = [];
-  let walked = 0;
-  for (let i = samples.length - 1; i > 0 && walked < backDist; i--) {
-    walked += dist(samples[i], samples[i - 1]);
-    reverse.push({ x: samples[i - 1].x, y: samples[i - 1].y });
-  }
-
-  const poly: Vec[] = [
-    { x: last.x + tx * nose, y: last.y + ty * nose },
-    { x: last.x, y: last.y },
-    ...reverse,
-  ];
-  const nNose = 7;
-  const nBack = 20;
-  const total = nNose + nBack;
+  // Heading has already turned into the closing orientation. Use the approach
+  // direction to distinguish a vertical rounded cap from a horizontal finish.
+  const prev = samples[Math.max(0, samples.length - 2)];
+  const approach = Math.atan2(last.y - prev.y, last.x - prev.x);
+  const roundCap = forceRound || Math.abs(Math.cos(approach)) < 0.55;
+  const n = 18;
+  const pathFrac = 0.86;
   for (const s of samples) s.t *= pathFrac;
-
-  for (let i = 1; i <= nNose; i++) {
-    const u = i / nNose;
+  for (let i = 1; i <= n; i++) {
+    const u = i / n;
+    const capU = Math.min(1, u / 0.7);
+    const roundness = capU * capU * (3 - 2 * capU);
+    const lift = u < 0.7 ? 1 : Math.pow(Math.max(0, 1 - (u - 0.7) / 0.3), 1.4);
     samples.push({
-      x: last.x + tx * nose * u,
-      y: last.y + ty * nose * u,
-      angle: a,
-      t: pathFrac + (i / total) * (1 - pathFrac),
-      pressure: 1,
+      x: last.x,
+      y: last.y,
+      angle: last.angle,
+      pathAngle: approach,
+      t: pathFrac + u * (1 - pathFrac),
+      pressure: last.pressure * lift,
       kind,
-      hold: false,
-      blot: false,
+      hold: true,
+      blot: roundCap,
+      spread: roundCap ? lerp(1, 0.9, roundness) : 1,
+      roundness: roundCap ? roundness : undefined,
     });
   }
-
-  for (let i = 1; i <= nBack; i++) {
-    const u = i / nBack;
-    const p = pointAlong(poly, u);
-    const nxt = pointAlong(poly, Math.min(1, u + 1 / nBack));
-    samples.push({
-      x: p.x,
-      y: p.y,
-      angle: Math.atan2(nxt.y - p.y, nxt.x - p.x),
-      t: pathFrac + ((nNose + i) / total) * (1 - pathFrac),
-      pressure: u < 0.22 ? 1 : lerp(1, 0.2, Math.pow((u - 0.22) / 0.78, 0.85)),
-      kind,
-      hold: false,
-      blot: false,
-    });
-  }
-}
-
-function pointAlong(poly: Vec[], t: number): Vec {
-  if (poly.length === 0) return { x: 0, y: 0 };
-  if (poly.length === 1 || t <= 0) return { ...poly[0] };
-  let total = 0;
-  const segs: number[] = [0];
-  for (let i = 1; i < poly.length; i++) {
-    total += dist(poly[i - 1], poly[i]);
-    segs.push(total);
-  }
-  if (total <= 1e-4) return { ...poly[poly.length - 1] };
-  const target = t * total;
-  for (let i = 1; i < segs.length; i++) {
-    if (target <= segs[i]) {
-      const u = (target - segs[i - 1]) / Math.max(1e-4, segs[i] - segs[i - 1]);
-      return {
-        x: lerp(poly[i - 1].x, poly[i].x, u),
-        y: lerp(poly[i - 1].y, poly[i].y, u),
-      };
-    }
-  }
-  return { ...poly[poly.length - 1] };
 }
 
 export function layoutCells(count: number, width: number, height: number): Cell[] {

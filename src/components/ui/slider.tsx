@@ -34,6 +34,8 @@ function Slider({
       {Array.from({ length: _values.length }, (_, i) => (
         <SliderPrimitive.Thumb
           key={i}
+          aria-label={props["aria-label"]}
+          aria-labelledby={props["aria-labelledby"]}
           className="block size-4 rounded-full border border-ink bg-paper shadow-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-seal/50"
         />
       ))}

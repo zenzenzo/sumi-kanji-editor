@@ -65,79 +65,72 @@ export async function renderCalligraphyGif(opts: GifExportOptions): Promise<Blob
   wrap.appendChild(canvas);
   document.body.appendChild(wrap);
 
-  const player = new BrushPlayer({
-    canvas,
-    glyphs: opts.glyphs,
-    paper: opts.paper,
-    colors: opts.colors,
-    showGrid: opts.showGrid,
-    showGhost: opts.showGhost,
-    settings: opts.settings,
-    edits: opts.edits,
-    speed: 1,
-    reducedMotion: false,
-    fixedSize: { w: size, h: size, dpr: 1 },
-  });
-  player.rewind();
-
-  // Capture at a fixed simulated frame rate, but collapse runs of pixel-
-  // identical frames (paper-texture-only pauses between strokes, the tail
-  // of a settle once ink stops moving) into one frame with a longer delay.
-  // This both shrinks the file and keeps on-screen timing accurate to the
-  // in-app playback, since no visual time is dropped — only redundant
-  // encoded frames are.
-  const advanceMs = delayMs * Math.max(0.25, opts.speed);
-  const frames: CapturedFrame[] = [];
-  const cap = 720;
-  let n = 0;
-  let going = true;
-  while (going && n < cap) {
-    going = player.tickMs(advanceMs);
-    const pixels = player.readPixels();
-    const prev = frames[frames.length - 1];
-    if (prev && framesEqual(prev.data, pixels.data)) {
-      prev.delayMs += delayMs;
-    } else {
-      frames.push({ data: pixels.data, delayMs });
-    }
-    n += 1;
-    if (n % 6 === 0) {
-      opts.onProgress?.(Math.min(0.85, n / 90));
-      await yieldUi();
-    }
-  }
-  const lastData = frames[frames.length - 1]?.data ?? player.readPixels().data;
-  const { w, h } = player.pixelSize();
-  player.destroy();
-  wrap.remove();
-
-  opts.onProgress?.(0.88);
-  await yieldUi();
-
-  const palette = quantize(lastData, maxColors, { format: "rgb565" });
-  // Match the LZW minimum code size (and so the bit-width of every encoded
-  // symbol) to the palette actually in use instead of gifenc's default of a
-  // full 8 bits (256 colors) — a real, lossless reduction in output size.
-  const colorDepth = Math.max(2, Math.ceil(Math.log2(palette.length)));
-  const gif = GIFEncoder();
-  for (let i = 0; i < frames.length; i++) {
-    const frame = frames[i];
-    const index = applyPalette(frame.data, palette);
-    gif.writeFrame(index, w, h, {
-      palette: i === 0 ? palette : undefined,
-      delay: frame.delayMs,
-      colorDepth,
-      repeat: i === 0 ? 0 : undefined,
+  let player: BrushPlayer | null = null;
+  try {
+    player = new BrushPlayer({
+      canvas,
+      glyphs: opts.glyphs,
+      paper: opts.paper,
+      colors: opts.colors,
+      showGrid: opts.showGrid,
+      showGhost: opts.showGhost,
+      settings: opts.settings,
+      edits: opts.edits,
+      speed: 1,
+      reducedMotion: false,
+      fixedSize: { w: size, h: size, dpr: 1 },
     });
-    if (i % 8 === 0) {
-      opts.onProgress?.(0.88 + 0.1 * (i / Math.max(1, frames.length)));
-      await yieldUi();
+
+    // Build the palette from the finished artwork, then capture from the start.
+    // Encode as we go so long pieces need only one pending RGBA frame in memory.
+    player.finish();
+    const palette = quantize(player.readPixels().data, maxColors, { format: "rgb565" });
+    const colorDepth = Math.max(2, Math.ceil(Math.log2(palette.length)));
+    const { w, h } = player.pixelSize();
+    const gif = GIFEncoder();
+    let firstFrame = true;
+    const encode = (frame: CapturedFrame) => {
+      gif.writeFrame(applyPalette(frame.data, palette), w, h, {
+        palette: firstFrame ? palette : undefined,
+        delay: frame.delayMs,
+        colorDepth,
+        repeat: firstFrame ? 0 : undefined,
+      });
+      firstFrame = false;
+    };
+    player.rewind();
+    const advanceMs = delayMs * Math.max(0.25, opts.speed);
+    let pending: CapturedFrame | null = null;
+    let going = true;
+    let n = 0;
+    // Capture through completion; a fixed frame cap silently truncated slow or
+    // complex characters. Collapse identical frames without dropping their time.
+    while (going) {
+      going = player.tickMs(advanceMs);
+      const pixels = player.readPixels();
+      if (pending && framesEqual(pending.data, pixels.data)) {
+        pending.delayMs += delayMs;
+      } else {
+        if (pending) encode(pending);
+        pending = { data: pixels.data, delayMs };
+      }
+      n += 1;
+      if (n % 6 === 0) {
+        opts.onProgress?.(Math.min(0.95, n / (n + 90)));
+        await yieldUi();
+      }
     }
+    if (pending) {
+      pending.delayMs += holdMs;
+      encode(pending);
+    }
+    gif.finish();
+    opts.onProgress?.(1);
+    return new Blob([gif.bytes() as BlobPart], { type: "image/gif" });
+  } finally {
+    player?.destroy();
+    wrap.remove();
   }
-  gif.writeFrame(applyPalette(lastData, palette), w, h, { palette, delay: holdMs, colorDepth });
-  gif.finish();
-  opts.onProgress?.(1);
-  return new Blob([gif.bytes() as BlobPart], { type: "image/gif" });
 }
 
 export function downloadBlob(blob: Blob, name: string) {

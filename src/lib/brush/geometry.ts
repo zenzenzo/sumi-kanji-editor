@@ -26,6 +26,14 @@ export function angleDiff(a: number, b: number): number {
   return d;
 }
 
+/** A brush footprint is an axis: a half-turn is the same orientation. */
+export function axisAngleDiff(a: number, b: number): number {
+  let d = angleDiff(a, b);
+  if (d > Math.PI / 2) d -= Math.PI;
+  if (d < -Math.PI / 2) d += Math.PI;
+  return d;
+}
+
 function centripetalCatmullRom(p0: Vec, p1: Vec, p2: Vec, p3: Vec, t: number): Vec {
   const d01 = dist(p0, p1);
   const d12 = dist(p1, p2);
@@ -100,9 +108,9 @@ export function pathLength(pts: Vec[]): number {
 
 export function classifyStroke(median: number[][]): StrokeKind {
   const pts: Vec[] = median.map(([x, y]) => ({ x, y }));
-  if (pts.length < 3) return "dot";
   const len = pathLength(pts);
   if (len < 90) return "dot";
+  if (simplifyStraightStroke(median)) return "stop";
 
   const cutoff = len * 0.62;
   let acc = 0;
@@ -123,6 +131,82 @@ export function classifyStroke(median: number[][]): StrokeKind {
   return "stop";
 }
 
+/**
+ * Keep the two original nodes bounding the main axial body. Length, rather
+ * than node count, determines the 60% majority; endpoint flourishes are trimmed.
+ * Preserve the body's slant and sharp terminal hooks.
+ */
+export function simplifyStraightStroke(
+  median: number[][],
+): { mode: "horizontal" | "vertical"; points: number[][] } | null {
+  if (median.length < 2 || verticalHookIndex(median) != null || horizontalHookIndex(median) != null) return null;
+  const pts = median.map(([x, y]) => ({ x, y }));
+  const len = pathLength(pts);
+  if (len < 90) return null;
+  const tolerance = Math.sin(12 * Math.PI / 180);
+  const lengths = pts.slice(1).map((p, i) => dist(pts[i], p));
+  const cumulative = [0];
+  for (const length of lengths) cumulative.push(cumulative[cumulative.length - 1] + length);
+  let best: { mode: "horizontal" | "vertical"; start: number; end: number; length: number } | null = null;
+  for (const mode of ["vertical", "horizontal"] as const) {
+    const axial = lengths.map((length, i) => length > 1e-6 &&
+      Math.abs(mode === "vertical" ? pts[i + 1].x - pts[i].x : pts[i + 1].y - pts[i].y) / length <= tolerance + 1e-12);
+    const majority = lengths.reduce((sum, length, i) => sum + (axial[i] ? length : 0), 0);
+    if (majority <= len * 0.6) continue;
+    const main = lengths.reduce((best, length, i) => axial[i] && length > lengths[best] ? i : best, axial.findIndex(Boolean));
+    const bodyAngle = Math.atan2(pts[main + 1].y - pts[main].y, pts[main + 1].x - pts[main].x);
+    // Near-axis endpoint gestures can still be tilted relative to the actual
+    // body. Exclude those short deviations instead of extending the body to them.
+    const aligned = axial.map((value, i) => value && Math.abs(angleDiff(bodyAngle,
+      Math.atan2(pts[i + 1].y - pts[i].y, pts[i + 1].x - pts[i].x))) <= 4 * Math.PI / 180);
+    for (let start = 0; start < pts.length - 1; start++) {
+      for (let end = start + 1; end < pts.length; end++) {
+        if (!aligned[end - 1]) break;
+        const bodyLen = cumulative[end] - cumulative[start];
+        if (bodyLen <= len * 0.6 || (best && bodyLen <= best.length)) continue;
+        // A large remaining leg is a compound stroke, not a brush flourish.
+        if (cumulative[start] > len * 0.4 || len - cumulative[end] > len * 0.4) continue;
+        const dx = pts[end].x - pts[start].x;
+        const dy = pts[end].y - pts[start].y;
+        const chord = Math.hypot(dx, dy);
+        if (chord < bodyLen * 0.98) continue;
+        const tx = dx / chord, ty = dy / chord;
+        if (end < pts.length - 1) {
+          // Inspect the whole tail: a rounded lead-in can precede the sharp
+          // hook, so testing only its first segment loses roof-radical hooks.
+          let hooked = false;
+          for (let i = end; i < pts.length - 1; i++) {
+            const tailX = pts[i + 1].x - pts[i].x;
+            const tailY = pts[i + 1].y - pts[i].y;
+            const turn = Math.abs(angleDiff(Math.atan2(dy, dx), Math.atan2(tailY, tailX)));
+            // A tiny sideways, still-downward flick on a vertical is a brush
+            // release. Upward hooks are protected separately, and reversals
+            // remain protected even when their tail is short.
+            const tailMinimum = mode === "vertical" && turn < Math.PI / 2
+              ? Math.max(12, len * 0.08)
+              : Math.max(12, len * 0.025);
+            if (turn >= Math.PI / 4 && len - cumulative[i] >= tailMinimum) hooked = true;
+          }
+          if (hooked) continue;
+        }
+        const residual = Math.max(6, bodyLen * 0.018);
+        let straight = true;
+        for (let i = start + 1; i <= end; i++) {
+          const x = pts[i].x - pts[start].x, y = pts[i].y - pts[start].y;
+          if (Math.abs(x * ty - y * tx) > residual ||
+              (pts[i].x - pts[i - 1].x) * tx + (pts[i].y - pts[i - 1].y) * ty <= 0) {
+            straight = false;
+            break;
+          }
+        }
+        if (straight) best = { mode, start, end, length: bodyLen };
+      }
+    }
+  }
+  if (!best) return null;
+  return { mode: best.mode, points: [median[best.start].slice(0, 2), median[best.end].slice(0, 2)] };
+}
+
 /** 磔 goes right (and usually down). */
 export function isRightwardSweep(median: number[][]): boolean {
   if (median.length < 2) return false;
@@ -138,6 +222,28 @@ export function isLeftwardSweep(median: number[][]): boolean {
   const b = median[median.length - 1];
   const left = a[0] - b[0];
   return left > 48 && left > Math.abs(b[1] - a[1]) * 0.35;
+}
+
+/** Remove a short imported brush-setting bend from a Short left path. */
+export function trimShortLeftEntry(median: number[][]): number[][] {
+  const copy = () => median.map(p => p.slice(0, 2));
+  if (median.length < 3 || verticalHookIndex(median) != null || horizontalHookIndex(median) != null) return copy();
+  const pts = median.map(([x, y]) => ({ x, y }));
+  const len = pathLength(pts);
+  let prefix = 0;
+  let cut = 0;
+  for (let i = 1; i <= 2 && i < pts.length - 1; i++) {
+    prefix += dist(pts[i - 1], pts[i]);
+    if (prefix > len * 0.25) break;
+    const incoming = Math.atan2(pts[i].y - pts[i - 1].y, pts[i].x - pts[i - 1].x);
+    const outgoing = Math.atan2(pts[i + 1].y - pts[i].y, pts[i + 1].x - pts[i].x);
+    const left = pts[i + 1].x < pts[i].x;
+    const turn = Math.abs(angleDiff(incoming, outgoing));
+    // Trim only the tiny entry bend, never a substantial first leg. An already
+    // smooth leftward start stays intact; the remainder retains all its nodes.
+    if (left && turn >= Math.PI / 4 && turn < Math.PI * 0.95) cut = i;
+  }
+  return median.slice(cut).map(p => p.slice(0, 2));
 }
 
 /** 策 — rising diagonal (right and up in y-up glyph space). */
@@ -255,6 +361,46 @@ export function inferBone(median: number[][]): "vertical" | "horizontal" | null 
   const dy = b.y - a.y;
   if (Math.abs(dy) > Math.abs(dx) * 1.65) return "vertical";
   if (Math.abs(dx) > Math.abs(dy) * 1.65) return "horizontal";
+  return null;
+}
+
+/** A horizontal roof may round its corner before hooking back to the left. */
+export function horizontalHookIndex(median: number[][]): number | null {
+  if (median.length < 3) return null;
+  const pts = median.map(([x, y]) => ({ x, y }));
+  const len = pathLength(pts);
+  let turn = 0;
+  for (let i = 1; i < pts.length; i++) if (pts[i].x > pts[turn].x) turn = i;
+  if (turn === 0 || turn === pts.length - 1) return null;
+  const first = pts[0], corner = pts[turn], last = pts[pts.length - 1];
+  const run = corner.x - first.x;
+  const t = vertexPathT(pts, turn);
+  if (run < 120 || Math.abs(corner.y - first.y) > run * 0.35 || t < 0.55) return null;
+  if (corner.x - last.x < 24 || (1 - t) * len < 24 || 1 - t > 0.35) return null;
+  const incoming = Math.atan2(corner.y - first.y, run);
+  const outgoing = Math.atan2(last.y - corner.y, last.x - corner.x);
+  return Math.abs(angleDiff(incoming, outgoing)) >= Math.PI / 4 ? turn : null;
+}
+
+/** Locate a late downward-to-upward bend on a predominantly vertical stroke. */
+export function verticalHookIndex(median: number[][]): number | null {
+  if (median.length < 3) return null;
+  const pts = median.map(([x, y]) => ({ x, y }));
+  const len = pathLength(pts);
+  const first = pts[0];
+  const last = pts[pts.length - 1];
+  for (let i = pts.length - 2; i > 0; i--) {
+    const p = pts[i], before = pts[i - 1], after = pts[i + 1];
+    const t = vertexPathT(pts, i);
+    const drop = first.y - p.y;
+    if (t < 0.55 || drop < 120 || drop < Math.abs(p.x - first.x) * 1.65) continue;
+    if ((1 - t) * len > len * 0.35 || last.y - p.y < 12) continue;
+    const inY = p.y - before.y;
+    const outY = after.y - p.y;
+    if (inY >= -8 || outY < 0) continue;
+    const turn = Math.abs(angleDiff(Math.atan2(inY, p.x - before.x), Math.atan2(outY, after.x - p.x)));
+    if (turn >= 0.65) return i;
+  }
   return null;
 }
 

@@ -50,7 +50,7 @@ export function PathToolbar({ showPath, tool, onShowPath, onTool }: Props) {
         const active = showPath && tool === t.id;
         const title =
           t.id === "move"
-            ? "Drag points · click a line to add"
+            ? "Drag nodes · drag a segment to bend · click to add a node"
             : t.id === "draw"
               ? "Click to place nodes · double-click to finish"
             : t.id === "delete"

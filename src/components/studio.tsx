@@ -58,6 +58,7 @@ export function Studio() {
   const [exporting, setExporting] = useState(false);
   const composing = useRef(false);
   const cmdTimer = useRef<number | null>(null);
+  const writeRequest = useRef(0);
 
   const written = glyphs.map((g) => g.char).join("");
   const pinned = written.length > 0 && [...written].every((c) => scroll.includes(c));
@@ -85,31 +86,36 @@ export function Studio() {
       toast("Enter a kanji character — kana and Latin are ignored.");
       return;
     }
+    const request = ++writeRequest.current;
     setLoading(true);
     try {
       const results = await loadGlyphs({ data: chars.join("") });
+      if (request !== writeRequest.current) return;
       const ok = results.filter((r): r is GlyphData => r.ok);
       const missing = results.filter((r) => !r.ok).map((r) => r.char);
       if (missing.length) {
         toast(`No stroke order for ${missing.join(" ")}`);
       }
       if (!ok.length) {
-        setLoading(false);
         return;
       }
       setGlyphs(ok);
       setBook(bookForGlyphs(ok));
       setQuery(ok.map((g) => g.char).join(""));
     } catch (err) {
+      if (request !== writeRequest.current) return;
       toast(err instanceof Error ? err.message : "Could not load stroke order.");
     } finally {
-      setLoading(false);
+      if (request === writeRequest.current) setLoading(false);
     }
   }
 
   useEffect(() => {
     void write(DEFAULT);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    return () => {
+      writeRequest.current += 1;
+      if (cmdTimer.current) window.clearTimeout(cmdTimer.current);
+    };
   }, []);
 
   useEffect(() => {
@@ -154,6 +160,9 @@ export function Studio() {
           custom: base.custom,
           strokes: base.strokes.map((s, i) => ({
             points: s.points,
+            curves: s.curves,
+            entryAngle: s.entryAngle,
+      entryPressure: s.entryPressure,
             pins: suggestPins(s.points.length >= 2 ? s.points : (g.medians[i] ?? s.points), g.char, i),
           })),
         };
@@ -453,7 +462,7 @@ export function Studio() {
 
           {showPath && (
             <div className="mt-4 border-t border-border pt-4">
-              <div className="flex gap-2">
+              <div className="flex flex-wrap gap-2">
                 <Button type="button" size="sm" variant="outline" onClick={applySuggestions}>
                   Suggest
                 </Button>
@@ -463,9 +472,15 @@ export function Studio() {
                 <Button type="button" size="sm" variant="outline" onClick={clearPaths}>
                   Clear
                 </Button>
+                <Button type="button" size="sm" variant="outline" onClick={() => {
+                  const edits = Object.fromEntries(glyphs.map(g => [g.char, { ...book[g.char], version: 3 }]));
+                  downloadBlob(new Blob([JSON.stringify(edits, null, 2)], { type: "application/json" }), `sumi-${written}-paths.json`);
+                }}>
+                  Export paths
+                </Button>
               </div>
               <p className="mt-3 text-[0.7rem] leading-relaxed text-ink-soft">
-                Drag the median. Type comes only from pins (側勒努趯策掠啄磔).
+                Drag nodes to move them; drag between nodes to bend. Click the first node in Move mode to turn the brush angle. Type comes only from pins (側勒努趯策掠啄磔).
                 Pressure is a multiplier on that type — two pins blend. Path color
                 follows the active type after each pin.
               </p>
